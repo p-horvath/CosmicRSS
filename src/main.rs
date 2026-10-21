@@ -4,14 +4,13 @@ mod sync;
 
 use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Subscription, Length};
-use cosmic::iced_core::Alignment;
-use cosmic::iced_widget::scrollable::Viewport;
-use cosmic::widget::{column, container, scrollable, text, row, nav_bar, Space};
+use cosmic::iced::Alignment;
+use cosmic::iced::widget::scrollable::Viewport;
+use cosmic::widget::{container, scrollable, text, Column, Row, nav_bar, Space};
 use cosmic::widget::button;
-use cosmic::widget::menu::{self, KeyBind};
+use cosmic::widget::menu::{self};
 use cosmic::{Application, Element};
 use feed::Entry;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 const PAGE_SIZE: usize = 50;
@@ -196,12 +195,12 @@ impl Application for App {
         let active = self.nav.active();
         let channel_id: Option<&String> = self.nav.data(active);
 
-        let mut col = column().spacing(4);
+        let mut col = Column::new().spacing(4);
 
         for e in &self.selected_entries {
             col = col.push(
                 container(
-                    column()
+                    Column::new()
                         .push(text(&e.title).size(16))
                         .push(
                             text(e.published.format("%d %b %Y  %H:%M").to_string())
@@ -215,15 +214,15 @@ impl Application for App {
         }
 
         if !self.all_loaded {
-            col = col.push(Space::with_height(8));
+            col = col.push(Space::new().height(8));
             col = col.push(
-                row()
+                Row::new()
                     .spacing(12)
                     .push(button::text("Load more").on_press(Message::LoadMore))
                     .push(text(format!("{} loaded", self.selected_entries.len())).size(12)),
             );
         } else if !self.selected_entries.is_empty() {
-            col = col.push(Space::with_height(8));
+            col = col.push(Space::new().height(8));
             col = col.push(
                 text(format!("All {} articles loaded", self.selected_entries.len())).size(12),
             );
@@ -244,10 +243,8 @@ impl Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with_id(
-            "rss-sync",
-            futures::stream::unfold(SyncState::Init, |state| async move {
-                match state {
+        Subscription::run(|| futures::stream::unfold(SyncState::Init, |state| async move {
+            match state {
                     SyncState::Init => {
                         let (force_tx, force_rx) = mpsc::channel::<()>(1);
                         let (chan_tx, chan_rx) = mpsc::channel(10);
@@ -264,9 +261,8 @@ impl Application for App {
                             SyncState::Running { chan_rx, force_tx },
                         ))
                     }
-                }
-            }),
-        )
+            }
+        }))
     }
 }
 
