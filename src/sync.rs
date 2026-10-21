@@ -1,3 +1,4 @@
+use crate::db;
 use crate::feed::{Channel, Entry};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -5,27 +6,6 @@ use rss::Channel as RssChannel;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time;
-
-const URLS: &[&str] = &[
-    "https://feeds.bbci.co.uk/news/world/rss.xml",
-    "https://feeds.bbci.co.uk/news/technology/rss.xml",
-    "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
-    "https://www.aljazeera.com/xml/rss/all.xml",
-    "https://www.theguardian.com/world/rss",
-    "https://www.theguardian.com/uk/technology/rss",
-    "https://feeds.npr.org/1001/rss.xml",
-    "https://hnrss.org/best",
-    "https://feeds.arstechnica.com/arstechnica/index",
-    "https://www.theverge.com/rss/index.xml",
-    "https://www.wired.com/feed/rss",
-    "https://lwn.net/headlines/rss",
-    "https://www.phoronix.com/rss.php",
-    "https://blog.system76.com/rss.xml",
-    "https://www.nasa.gov/news-release/feed/",
-    "https://www.sciencedaily.com/rss/top/science.xml",
-    "https://this-week-in-rust.org/rss.xml",
-    "https://planet.gnome.org/rss20.xml",
-];
 
 pub async fn fetch_url(url: &str) -> Result<Channel> {
     let xml = reqwest::get(url).await?.bytes().await?;
@@ -53,8 +33,8 @@ pub async fn fetch_url(url: &str) -> Result<Channel> {
     })
 }
 
-async fn fetch_all() -> Vec<Channel> {
-    futures::future::join_all(URLS.iter().map(|u| fetch_url(u)))
+async fn fetch_all(urls: &[String]) -> Vec<Channel> {
+    futures::future::join_all(urls.iter().map(|u| fetch_url(u.as_str())))
         .await
         .into_iter()
         .flatten()
@@ -68,6 +48,10 @@ pub async fn sync_loop(
 ) {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    // Own connection to the DB so the feed list can be read on every round.
+    // WAL mode allows this to coexist with the main app's connection.
+    let conn = db::init();
+
     let mut interval = time::interval(Duration::from_secs(600));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
@@ -79,7 +63,12 @@ pub async fn sync_loop(
             },
         }
 
-        let channels = fetch_all().await;
+        let feeds: Vec<String> = db::load_channels(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.url)
+            .collect();
+        let channels = fetch_all(&feeds).await;
         if !channels.is_empty() {
             let _ = tx.send(channels).await;
         }

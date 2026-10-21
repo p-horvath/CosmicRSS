@@ -3,6 +3,13 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
+/// Default feed set, seeded on first run so the sync loop has feeds to fetch.
+const DEFAULT_FEEDS: &[&str] = &[
+    "https://www.phoronix.com/rss.php",
+    "https://blog.system76.com/rss.xml",
+    "https://this-week-in-rust.org/rss.xml",
+];
+
 pub fn init() -> Connection {
     let conn = Connection::open("rss.db").unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
@@ -23,7 +30,40 @@ pub fn init() -> Connection {
         );",
     )
     .unwrap();
+    // First-run seed: insert the default feed set when the channel table is empty.
+    // `title` starts as the URL and is corrected on the first successful fetch.
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM channel", [], |r| r.get(0))
+        .unwrap();
+    if count == 0 {
+        for url in DEFAULT_FEEDS {
+            conn.execute(
+                "INSERT OR IGNORE INTO channel (id, title, url) VALUES (?1, ?2, ?3)",
+                params![url, url, url],
+            )
+            .unwrap();
+        }
+    }
     conn
+}
+
+/// Adds a feed. `id` is the URL (matching the PK scheme); `title` starts as the
+/// URL and is corrected on the first successful fetch by `store()`.
+pub fn add_channel(conn: &Connection, url: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO channel (id, title, url) VALUES (?1, ?2, ?3)",
+        params![url, url, url],
+    )?;
+    Ok(())
+}
+
+/// Removes a feed and all of its entries.
+pub fn remove_channel(conn: &mut Connection, id: &str) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM entry WHERE channel = ?1", params![id])?;
+    tx.execute("DELETE FROM channel WHERE id = ?1", params![id])?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn store(conn: &mut Connection, channels: &[Channel]) -> anyhow::Result<()> {

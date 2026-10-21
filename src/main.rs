@@ -2,11 +2,11 @@ mod db;
 mod feed;
 mod sync;
 
-use cosmic::app::{Core, Settings, Task};
+use cosmic::app::{Action, Core, Settings, Task};
 use cosmic::iced::{Subscription, Length};
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::Viewport;
-use cosmic::widget::{container, scrollable, text, Column, Row, nav_bar, Space};
+use cosmic::widget::{container, scrollable, text, text_input, Column, Row, nav_bar, Space};
 use cosmic::widget::button;
 use cosmic::widget::menu::{self};
 use cosmic::{Application, Element};
@@ -25,6 +25,7 @@ struct App {
     conn: rusqlite::Connection,
     syncing: bool,
     force_tx: Option<mpsc::Sender<()>>,
+    new_feed_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +37,9 @@ enum Message {
     SyncReady(mpsc::Sender<()>),
     ToggleSidebar,
     ForceRefreshSent,
+    AddFeedInput(String),
+    AddFeed,
+    CloseFeed(nav_bar::Id),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,9 +98,42 @@ impl Application for App {
                 conn,
                 syncing: false,
                 force_tx: None,
+                new_feed_url: String::new(),
             },
             Task::none(),
         )
+    }
+
+    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Message>>> {
+        if !self.core().nav_bar_active() {
+            return None;
+        }
+
+        let nav_model = self.nav_model()?;
+
+        let mut nav = cosmic::widget::nav_bar(
+            nav_model,
+            |id| cosmic::Action::Cosmic(Action::NavBar(id)),
+        )
+        .on_context(|id| cosmic::Action::Cosmic(Action::NavBarContext(id)))
+        .on_close(|id| cosmic::Action::App(Message::CloseFeed(id)))
+        .context_menu(self.nav_context_menu());
+        #[cfg(wayland_platform)]
+        {
+            nav = nav
+                .window_id_maybe(self.core().main_window_id())
+                .on_surface_action(|action| cosmic::Action::Surface(action.flatten()))
+        }
+        let mut nav = nav
+            .into_container()
+            .width(Length::Shrink)
+            .height(Length::Fill);
+
+        if !self.core().is_condensed() {
+            nav = nav.max_width(280);
+        }
+
+        Some(Element::from(nav))
     }
 
     fn nav_model(&self) -> Option<&nav_bar::Model> {
@@ -143,16 +180,29 @@ impl Application for App {
                 }
 
                 let db_channels = db::load_channels(&self.conn).unwrap_or_default();
-                let existing_ids: Vec<String> = self.nav
-                    .iter()
-                    .filter_map(|id| self.nav.data::<String>(id).cloned())
-                    .collect();
                 for ch in &db_channels {
-                    if !existing_ids.contains(&ch.id) {
-                        self.nav.insert()
-                            .text(ch.title.clone())
-                            .icon(cosmic::widget::icon::from_name("application-rss+xml-symbolic"))
-                            .data(ch.id.clone());
+                    let nav_id = self
+                        .nav
+                        .iter()
+                        .find(|id| self.nav.data::<String>(*id) == Some(&ch.id));
+                    match nav_id {
+                        // Refresh the title if it was corrected (e.g. a newly added or
+                        // first-run seeded feed whose title was still the URL).
+                        Some(nav_id) => {
+                            if let Some(current) = self.nav.text(nav_id) {
+                                if current != ch.title.as_str() {
+                                    self.nav.text_set(nav_id, ch.title.clone());
+                                }
+                            }
+                        }
+                        None => {
+                            self.nav.insert()
+                                .text(ch.title.clone())
+                                .icon(cosmic::widget::icon::from_name(
+                                    "application-rss+xml-symbolic",
+                                ))
+                                .data(ch.id.clone());
+                        }
                     }
                 }
                 self.channels = db_channels;
@@ -187,15 +237,82 @@ impl Application for App {
             }
 
             Message::ForceRefreshSent => {}
+
+            Message::AddFeedInput(url) => {
+                self.new_feed_url = url;
+            }
+
+            Message::AddFeed => {
+                let url = self.new_feed_url.trim().to_string();
+                if url.is_empty() {
+                    return Task::none();
+                }
+                let _ = db::add_channel(&self.conn, &url);
+                let exists = self
+                    .nav
+                    .iter()
+                    .any(|id| self.nav.data::<String>(id) == Some(&url));
+                if !exists {
+                    self.nav.insert()
+                        .text(url.clone())
+                        .icon(cosmic::widget::icon::from_name(
+                            "application-rss+xml-symbolic",
+                        ))
+                        .data(url.clone())
+                        .closable();
+                }
+                self.new_feed_url.clear();
+                // Trigger an immediate sync so the new feed's articles appear now.
+                self.syncing = true;
+                if let Some(tx) = self.force_tx.clone() {
+                    tokio::spawn(async move { let _ = tx.send(()).await; });
+                }
+            }
+
+            Message::CloseFeed(id) => {
+                let was_active = self.nav.active() == id;
+                let url: Option<String> = self.nav.data::<String>(id).cloned();
+                if let Some(url) = url {
+                    let _ = db::remove_channel(&mut self.conn, &url);
+                }
+                self.nav.remove(id);
+
+                if was_active {
+                    // Fall back to "All Articles" (the nav item with no data).
+                    let all_id = self
+                        .nav
+                        .iter()
+                        .find(|nav_id| self.nav.data::<String>(*nav_id).is_none());
+                    if let Some(all_id) = all_id {
+                        self.nav.activate(all_id);
+                    }
+                    self.selected_offset = 0;
+                    self.selected_entries =
+                        db::load_page(&self.conn, 0, PAGE_SIZE).unwrap_or_default();
+                    self.all_loaded = self.selected_entries.len() < PAGE_SIZE;
+                }
+            }
         }
         Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let active = self.nav.active();
-        let channel_id: Option<&String> = self.nav.data(active);
-
         let mut col = Column::new().spacing(4);
+
+        col = col.push(
+            Row::new()
+                .spacing(8)
+                .push(
+                    text_input(
+                        "https://example.com/feed.xml",
+                        &self.new_feed_url,
+                    )
+                    .on_input(Message::AddFeedInput)
+                    .width(Length::Fill),
+                )
+                .push(button::text("Add feed").on_press(Message::AddFeed))
+                .height(Length::Shrink),
+        );
 
         for e in &self.selected_entries {
             col = col.push(
