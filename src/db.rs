@@ -44,7 +44,8 @@ pub fn init() -> Connection {
             title     TEXT,
             link      TEXT,
             summary   TEXT,
-            published TEXT
+            published TEXT,
+            read      INTEGER NOT NULL DEFAULT 0
         );",
     )
     .unwrap();
@@ -109,10 +110,26 @@ pub fn store(conn: &mut Connection, channels: &[Channel]) -> anyhow::Result<()> 
             params![c.id, c.title, c.url],
         )?;
         for e in &c.entries {
+            // `read` is intentionally not in the DO UPDATE SET, so a
+            // user's read state survives sync rounds.
             tx.execute(
-                "INSERT OR REPLACE INTO entry (id, channel, title, link, summary, published)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![e.id, c.id, e.title, e.link, e.summary, e.published.to_rfc3339()],
+                "INSERT INTO entry (id, channel, title, link, summary, published, read)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                     channel = excluded.channel,
+                     title = excluded.title,
+                     link = excluded.link,
+                     summary = excluded.summary,
+                     published = excluded.published",
+                params![
+                    e.id,
+                    c.id,
+                    e.title,
+                    e.link,
+                    e.summary,
+                    e.published.to_rfc3339(),
+                    e.read as i64
+                ],
             )?;
         }
     }
@@ -140,12 +157,19 @@ fn parse_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
             4, rusqlite::types::Type::Text, Box::new(e),
         ))?;
-    Ok(Entry { id: r.get(0)?, title: r.get(1)?, link: r.get(2)?, summary: r.get(3)?, published })
+    Ok(Entry {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        link: r.get(2)?,
+        summary: r.get(3)?,
+        published,
+        read: r.get(5)?,
+    })
 }
 
 pub fn load_page(conn: &Connection, offset: usize, limit: usize) -> anyhow::Result<Vec<Entry>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, link, summary, published FROM entry
+        "SELECT id, title, link, summary, published, read FROM entry
          ORDER BY published DESC LIMIT ?1 OFFSET ?2",
     )?;
     let result = stmt
@@ -162,7 +186,7 @@ pub fn load_page_for_channel(
     limit: usize,
 ) -> anyhow::Result<Vec<Entry>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, link, summary, published FROM entry
+        "SELECT id, title, link, summary, published, read FROM entry
          WHERE channel = ?1
          ORDER BY published DESC LIMIT ?2 OFFSET ?3",
     )?;
@@ -178,6 +202,28 @@ pub fn count(conn: &Connection) -> anyhow::Result<usize> {
     Ok(n as usize)
 }
 
+/// Sets or clears the read flag for a single entry by id.
+pub fn set_entry_read(conn: &Connection, id: &str, read: bool) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE entry SET read = ?1 WHERE id = ?2",
+        params![read as i64, id],
+    )?;
+    Ok(())
+}
+
+/// Counts unread entries, optionally restricted to one channel.
+pub fn count_unread(conn: &Connection, channel_id: Option<&str>) -> anyhow::Result<usize> {
+    let n: i64 = match channel_id {
+        Some(cid) => conn.query_row(
+            "SELECT COUNT(*) FROM entry WHERE channel = ?1 AND read = 0",
+            params![cid],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row("SELECT COUNT(*) FROM entry WHERE read = 0", [], |r| r.get(0))?,
+    };
+    Ok(n as usize)
+}
+
 pub fn count_for_channel(conn: &Connection, channel_id: &str) -> anyhow::Result<usize> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM entry WHERE channel = ?1",
@@ -185,4 +231,77 @@ pub fn count_for_channel(conn: &Connection, channel_id: &str) -> anyhow::Result<
         |r| r.get(0),
     )?;
     Ok(n as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{count_unread, init, load_page, set_entry_read, store};
+    use crate::feed::{Channel, Entry};
+    use chrono::{DateTime, Utc};
+
+    const FEED_URL: &str = "https://example.com/feed.xml";
+
+    fn entry(id: &str, read: bool) -> Entry {
+        Entry {
+            id: id.to_string(),
+            title: format!("Title {id}"),
+            link: format!("https://example.com/{id}"),
+            summary: None,
+            published: DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            read,
+        }
+    }
+
+    fn channel(entries: Vec<Entry>) -> Channel {
+        Channel {
+            id: FEED_URL.to_string(),
+            title: "Test Feed".to_string(),
+            url: FEED_URL.to_string(),
+            entries,
+        }
+    }
+
+    // Single test fn: `XDG_DATA_HOME` is process-global and tests run in
+    // parallel, so the whole lifecycle lives in one sequential test.
+    #[test]
+    fn read_state_survives_sync_and_round_trips() {
+        // Isolate from the user's real database (`data_dir()` honors XDG_DATA_HOME).
+        let dir = std::env::temp_dir().join(format!("cosmic-rss-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+
+        let mut conn = init();
+
+        // Fresh entries are stored unread.
+        store(
+            &mut conn,
+            std::slice::from_ref(&channel(vec![entry("a", false), entry("b", false)])),
+        )
+        .unwrap();
+        assert_eq!(count_unread(&conn, None).unwrap(), 2);
+
+        // Mark "a" read; load_page and count_unread reflect it.
+        set_entry_read(&conn, "a", true).unwrap();
+        let page = load_page(&conn, 0, 10).unwrap();
+        assert!(page.iter().find(|e| e.id == "a").unwrap().read);
+        assert!(!page.iter().find(|e| e.id == "b").unwrap().read);
+        assert_eq!(count_unread(&conn, Some(FEED_URL)).unwrap(), 1);
+
+        // Simulate the next sync round: the fetch re-delivers everything as
+        // unread, and store() must not clobber the user's read flag.
+        store(
+            &mut conn,
+            std::slice::from_ref(&channel(vec![entry("a", false), entry("b", false)])),
+        )
+        .unwrap();
+        let page = load_page(&conn, 0, 10).unwrap();
+        assert!(page.iter().find(|e| e.id == "a").unwrap().read);
+        assert!(!page.iter().find(|e| e.id == "b").unwrap().read);
+        assert_eq!(count_unread(&conn, None).unwrap(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::env::remove_var("XDG_DATA_HOME");
+    }
 }

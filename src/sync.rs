@@ -34,6 +34,7 @@ fn parse_feed(url: &str, xml: &[u8]) -> Result<Channel> {
                             .pub_date()
                             .and_then(|d| DateTime::parse_from_rfc2822(d).ok())?
                             .with_timezone(&Utc),
+                        read: false,
                     })
                 })
                 .collect(),
@@ -60,6 +61,7 @@ fn parse_feed(url: &str, xml: &[u8]) -> Result<Channel> {
                             .published
                             .map(|d| d.with_timezone(&Utc))
                             .unwrap_or_else(|| e.updated.with_timezone(&Utc)),
+                        read: false,
                     })
                     .collect(),
             })

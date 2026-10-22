@@ -56,8 +56,10 @@ enum Message {
     RenameSubmit,
     /// "Cancel" button in the rename row.
     CancelRename,
-    /// Open an article entry's link in the default browser.
-    OpenEntry(String),
+    /// Open an article entry's link in the default browser (marks it read).
+    OpenEntry { id: String, link: String },
+    /// Click an article row: toggle its read state.
+    ToggleEntryRead(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -368,8 +370,19 @@ impl Application for App {
                 self.rename_text.clear();
             }
 
-            Message::OpenEntry(link) => {
+            Message::OpenEntry { id, link } => {
+                if let Some(e) = self.selected_entries.iter_mut().find(|e| e.id == id) {
+                    e.read = true;
+                }
+                let _ = db::set_entry_read(&self.conn, &id, true);
                 open_in_browser(link);
+            }
+
+            Message::ToggleEntryRead(id) => {
+                if let Some(e) = self.selected_entries.iter_mut().find(|e| e.id == id) {
+                    e.read = !e.read;
+                    let _ = db::set_entry_read(&self.conn, &id, e.read);
+                }
             }
         }
         Task::none()
@@ -412,39 +425,61 @@ impl Application for App {
         }
 
         for e in &self.selected_entries {
+            let read_class = if e.read {
+                MUTED_TEXT
+            } else {
+                NORMAL_TEXT
+            };
             col = col.push(
-                container(
-                    Row::new()
-                        .spacing(8)
-                        .align_y(Alignment::Center)
-                        .push(
-                            Column::new()
-                                .push(text(&e.title).size(16))
-                                .push(
-                                    text(
-                                        e.published
-                                            .with_timezone(&Local)
-                                            .format("%d %b %Y  %H:%M")
-                                            .to_string(),
+                button::custom(
+                    container(
+                        Row::new()
+                            .spacing(8)
+                            .align_y(Alignment::Center)
+                            .push(
+                                Column::new()
+                                    .push(
+                                        text(&e.title)
+                                            .size(16)
+                                            .class(read_class),
                                     )
-                                    .size(11),
-                                )
-                                .spacing(2)
-                                .width(Length::Fill),
-                        )
-                        .push(
-                            button::icon(cosmic::widget::icon::from_name("web-browser-symbolic"))
+                                    .push(
+                                        text(
+                                            e.published
+                                                .with_timezone(&Local)
+                                                .format("%d %b %Y  %H:%M")
+                                                .to_string(),
+                                        )
+                                        .size(11)
+                                        .class(read_class),
+                                    )
+                                    .spacing(2)
+                                    .width(Length::Fill),
+                            )
+                            .push(
+                                button::icon(cosmic::widget::icon::from_name(
+                                    "web-browser-symbolic",
+                                ))
                                 .class(cosmic::theme::Button::Transparent)
                                 .on_press_maybe(
-                                    (!e.link.is_empty())
-                                        .then(|| Message::OpenEntry(e.link.clone())),
+                                    (!e.link.is_empty()).then(|| Message::OpenEntry {
+                                        id: e.id.clone(),
+                                        link: e.link.clone(),
+                                    }),
                                 ),
-                        ),
+                            ),
+                    )
+                    .padding([8, 12])
+                    .width(Length::Fill),
                 )
-                .padding([8, 12])
-                .width(Length::Fill),
+                .class(cosmic::theme::Button::Transparent)
+                .on_press(Message::ToggleEntryRead(e.id.clone())),
             );
         }
+
+        let active = self.nav.active();
+        let channel_id: Option<String> = self.nav.data(active).cloned();
+        let unread = db::count_unread(&self.conn, channel_id.as_deref()).unwrap_or(0);
 
         if !self.all_loaded {
             col = col.push(Space::new().height(8));
@@ -452,12 +487,28 @@ impl Application for App {
                 Row::new()
                     .spacing(12)
                     .push(button::text("Load more").on_press(Message::LoadMore))
-                    .push(text(format!("{} loaded", self.selected_entries.len())).size(12)),
+                    .push(
+                        text(
+                            format!(
+                                "{} loaded ({} unread)",
+                                self.selected_entries.len(),
+                                unread
+                            ),
+                        )
+                        .size(12),
+                    ),
             );
         } else if !self.selected_entries.is_empty() {
             col = col.push(Space::new().height(8));
             col = col.push(
-                text(format!("All {} articles loaded", self.selected_entries.len())).size(12),
+                text(
+                    format!(
+                        "All {} articles loaded ({} unread)",
+                        self.selected_entries.len(),
+                        unread
+                    ),
+                )
+                .size(12),
             );
         } else {
             col = col.push(text("No articles yet — press Refresh").size(14));
@@ -544,6 +595,30 @@ fn menu_bar<'a>() -> Element<'a, Message> {
     .spacing(4.0)
     .into()
 }
+
+// Entry rows sit inside a transparent button, whose content text color is
+// transparent itself (it's meant for icon-only buttons) — so the text needs
+// an explicit color in both states; an inherited color would render nothing.
+fn normal_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(theme.cosmic().on_bg_color().into()),
+        ..Default::default()
+    }
+}
+
+/// Muted text for read entries: the theme's default on-background text color
+/// at reduced alpha, so it adapts to light/dark themes.
+fn muted_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text::Style {
+    let base: cosmic::iced::Color = theme.cosmic().on_bg_color().into();
+    cosmic::iced::widget::text::Style {
+        color: Some(cosmic::iced::Color { a: base.a * 0.55, ..base }),
+        ..Default::default()
+    }
+}
+
+const NORMAL_TEXT: cosmic::theme::Text = cosmic::theme::Text::Custom(normal_text_style);
+
+const MUTED_TEXT: cosmic::theme::Text = cosmic::theme::Text::Custom(muted_text_style);
 
 /// Open `url` in the system's default browser. Fire-and-forget on a dedicated
 /// thread so the UI thread never blocks; stdio is nulled so the child process

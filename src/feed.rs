@@ -8,6 +8,7 @@ pub struct Entry {
     pub link: String,
     pub summary: Option<String>,
     pub published: DateTime<Utc>,
+    pub read: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
