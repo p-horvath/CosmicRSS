@@ -121,24 +121,23 @@ impl Application for App {
         let selected_entries = db::load_page(&conn, 0, PAGE_SIZE).unwrap_or_default();
         let all_loaded = selected_entries.len() < PAGE_SIZE;
 
-        (
-            Self {
-                core,
-                nav,
-                channels,
-                selected_entries,
-                selected_offset: 0,
-                all_loaded,
-                conn,
-                syncing: false,
-                force_tx: None,
-                new_feed_url: String::new(),
-                adding_feed: false,
-                renaming_feed: None,
-                rename_text: String::new(),
-            },
-            Task::none(),
-        )
+        let mut app = Self {
+            core,
+            nav,
+            channels,
+            selected_entries,
+            selected_offset: 0,
+            all_loaded,
+            conn,
+            syncing: false,
+            force_tx: None,
+            new_feed_url: String::new(),
+            adding_feed: false,
+            renaming_feed: None,
+            rename_text: String::new(),
+        };
+        app.refresh_nav_counts();
+        (app, Task::none())
     }
 
     fn nav_model(&self) -> Option<&nav_bar::Model> {
@@ -214,31 +213,24 @@ impl Application for App {
 
                 let db_channels = db::load_channels(&self.conn).unwrap_or_default();
                 for ch in &db_channels {
-                    let nav_id = self
+                    let exists = self
                         .nav
                         .iter()
-                        .find(|id| self.nav.data::<String>(*id) == Some(&ch.id));
-                    match nav_id {
-                        // Refresh the title if it was corrected (e.g. a newly added or
-                        // first-run seeded feed whose title was still the URL).
-                        Some(nav_id) => {
-                            if let Some(current) = self.nav.text(nav_id) {
-                                if current != ch.title.as_str() {
-                                    self.nav.text_set(nav_id, ch.title.clone());
-                                }
-                            }
-                        }
-                        None => {
-                            self.nav.insert()
-                                .text(ch.title.clone())
-                                .icon(cosmic::widget::icon::from_name(
-                                    "application-rss+xml-symbolic",
-                                ))
-                                .data(ch.id.clone());
-                        }
+                        .any(|id| self.nav.data::<String>(id) == Some(&ch.id));
+                    if !exists {
+                        self.nav.insert()
+                            .text(ch.title.clone())
+                            .icon(cosmic::widget::icon::from_name(
+                                "application-rss+xml-symbolic",
+                            ))
+                            .data(ch.id.clone());
                     }
                 }
                 self.channels = db_channels;
+                // Labels (title + unread count) always sync from `self.channels`,
+                // so corrected titles (e.g. a newly added or first-run seeded
+                // feed whose title was still the URL) propagate here.
+                self.refresh_nav_counts();
 
                 let active = self.nav.active();
                 let channel_id: Option<String> = self.nav.data(active).cloned();
@@ -338,13 +330,24 @@ impl Application for App {
                         db::load_page(&self.conn, 0, PAGE_SIZE).unwrap_or_default();
                     self.all_loaded = self.selected_entries.len() < PAGE_SIZE;
                 }
+                self.refresh_nav_counts();
             }
 
             Message::RenameFeed(id) => {
                 // Opening the rename row closes the add row.
                 self.adding_feed = false;
                 self.new_feed_url.clear();
-                self.rename_text = self.nav.text(id).unwrap_or_default().to_string();
+                // Seed from the stored title, not the nav label (which may
+                // carry an unread-count suffix).
+                self.rename_text = match self.nav.data::<String>(id) {
+                    Some(cid) => self
+                        .channels
+                        .iter()
+                        .find(|ch| ch.id == *cid)
+                        .map(|ch| ch.title.clone())
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
                 self.renaming_feed = Some(id);
             }
 
@@ -359,10 +362,13 @@ impl Application for App {
                     if !title.is_empty() {
                         if let Some(url) = self.nav.data::<String>(id).cloned() {
                             let _ = db::set_channel_title(&self.conn, &url, &title);
+                            if let Some(ch) = self.channels.iter_mut().find(|ch| ch.id == url) {
+                                ch.title = title.clone();
+                            }
                         }
-                        self.nav.text_set(id, title);
                     }
                 }
+                self.refresh_nav_counts();
             }
 
             Message::CancelRename => {
@@ -376,6 +382,7 @@ impl Application for App {
                 }
                 let _ = db::set_entry_read(&self.conn, &id, true);
                 open_in_browser(link);
+                self.refresh_nav_counts();
             }
 
             Message::ToggleEntryRead(id) => {
@@ -383,6 +390,7 @@ impl Application for App {
                     e.read = !e.read;
                     let _ = db::set_entry_read(&self.conn, &id, e.read);
                 }
+                self.refresh_nav_counts();
             }
         }
         Task::none()
@@ -472,6 +480,10 @@ impl Application for App {
                     .padding([8, 12])
                     .width(Length::Fill),
                 )
+                // Fill width is required: a Shrink-width button enables width
+                // compression, which makes Length::Fill children resolve to
+                // content width instead of stretching (misaligning the icon).
+                .width(Length::Fill)
                 .class(cosmic::theme::Button::Transparent)
                 .on_press(Message::ToggleEntryRead(e.id.clone())),
             );
@@ -559,6 +571,40 @@ enum SyncState {
 }
 
 impl App {
+    /// Updates the nav labels with unread counts: a feed with unread entries
+    /// shows `"{title} {count}"`, a feed with none shows just its title, and
+    /// "All Articles" (the nav item with no data) shows the total. `text_set`
+    /// is only called when the label actually changed. Titles come from
+    /// `self.channels`, so title corrections/renames propagate through here.
+    fn refresh_nav_counts(&mut self) {
+        let ids: Vec<nav_bar::Id> = self.nav.iter().collect();
+        for id in ids {
+            let label = match self.nav.data::<String>(id) {
+                None => {
+                    let total = db::count_unread(&self.conn, None).unwrap_or(0);
+                    if total == 0 {
+                        "All Articles".to_string()
+                    } else {
+                        format!("All Articles {total}")
+                    }
+                }
+                Some(cid) => {
+                    let count = db::count_unread(&self.conn, Some(cid.as_str())).unwrap_or(0);
+                    match self.channels.iter().find(|ch| ch.id == *cid) {
+                        Some(ch) if count > 0 => format!("{} {}", ch.title, count),
+                        Some(ch) => ch.title.clone(),
+                        // Feed not in `self.channels` yet (e.g. just added via the
+                        // Feeds menu): keep its current label until the next Tick.
+                        None => continue,
+                    }
+                }
+            };
+            if self.nav.text(id) != Some(label.as_str()) {
+                self.nav.text_set(id, label);
+            }
+        }
+    }
+
     fn load_more(&mut self) -> Task<Message> {
         let next_offset = self.selected_offset + PAGE_SIZE;
         let active = self.nav.active();

@@ -16,6 +16,8 @@ A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) 
 - Delete feeds: right-click a feed in the sidebar → **Delete feed**
 - Rename feeds: right-click → **Rename feed** - the title is preserved across syncs and restarts
 - Displays feeds in a collapsible sidebar - click a feed to filter articles, "All Articles" shows everything
+- Tracks read/unread state: clicking an article row (or opening it in the browser) marks it read, clicking again marks it unread; read articles are dimmed. Read state survives restarts and feed syncs
+- Unread counts: each feed in the sidebar shows its unread number ("All Articles" shows the total), and the footer shows the unread count for the current view
 - Lazy-loads articles as you scroll, 50 at a time
 - Auto-syncs every 10 minutes in the background
 - "Refresh" button in the header to trigger an immediate sync
@@ -23,7 +25,6 @@ A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) 
 ## What it doesn't do (yet)
 
 - No article reading view - titles only, no content or summary pane
-- No read/unread tracking
 - No search
 - No notifications
 - RSS has no historical pagination, so older articles only accumulate over time as you leave the app running
