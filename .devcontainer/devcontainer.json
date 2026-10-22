@@ -1,0 +1,8 @@
+{
+  "name": "cosmic-rss (Fedora 45)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "root",
+  "updateRemoteUserUID": false,
+}

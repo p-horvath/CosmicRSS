@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::feed::{Channel, Entry};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -5,13 +7,29 @@ use rusqlite::{params, Connection};
 
 /// Default feed set, seeded on first run so the sync loop has feeds to fetch.
 const DEFAULT_FEEDS: &[&str] = &[
-    "https://www.phoronix.com/rss.php",
+    "https://github.com/pop-os/cosmic-epoch/releases.atom",
     "https://blog.system76.com/rss.xml",
-    "https://this-week-in-rust.org/rss.xml",
+    "https://www.phoronix.com/rss.php",
+    "https://this-week-in-rust.org/rss.xml"
 ];
 
+/// Per-user data directory: `$XDG_DATA_HOME/com.example.cosmic-rss` (matching
+/// `APP_ID`), defaulting to `~/.local/share/com.example.cosmic-rss`.
+fn data_dir() -> PathBuf {
+    let base = match std::env::var("XDG_DATA_HOME") {
+        Ok(xdg) if !xdg.is_empty() => PathBuf::from(xdg),
+        _ => {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".local").join("share")
+        }
+    };
+    base.join("com.example.cosmic-rss")
+}
+
 pub fn init() -> Connection {
-    let conn = Connection::open("rss.db").unwrap();
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir).expect("failed to create data directory");
+    let conn = Connection::open(dir.join("rss.db")).unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
         .unwrap();
     conn.execute_batch(
