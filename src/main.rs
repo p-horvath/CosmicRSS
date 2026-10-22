@@ -2,13 +2,16 @@ mod db;
 mod feed;
 mod sync;
 
-use cosmic::app::{Action, Core, Settings, Task};
+use std::collections::HashMap;
+
+use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Subscription, Length};
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::Viewport;
 use cosmic::widget::{container, scrollable, text, text_input, Column, Row, nav_bar, Space};
 use cosmic::widget::button;
-use cosmic::widget::menu::{self};
+use cosmic::widget::menu::{self, ItemHeight, ItemWidth};
+use chrono::Local;
 use cosmic::{Application, Element};
 use feed::Entry;
 use tokio::sync::mpsc;
@@ -26,6 +29,7 @@ struct App {
     syncing: bool,
     force_tx: Option<mpsc::Sender<()>>,
     new_feed_url: String,
+    adding_feed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -36,24 +40,38 @@ enum Message {
     RefreshNow,
     SyncReady(mpsc::Sender<()>),
     ToggleSidebar,
-    ForceRefreshSent,
     AddFeedInput(String),
+    /// "Feeds → Add feed…" pressed: toggles the add-feed input row.
     AddFeed,
-    CloseFeed(nav_bar::Id),
+    AddFeedSubmit,
+    CancelAddFeed,
+    DeleteFeed(nav_bar::Id),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MenuAction {
-    Refresh,
-    ToggleSidebar,
+    AddFeed,
 }
 
 impl menu::Action for MenuAction {
     type Message = Message;
     fn message(&self) -> Message {
         match self {
-            MenuAction::Refresh => Message::RefreshNow,
-            MenuAction::ToggleSidebar => Message::ToggleSidebar,
+            MenuAction::AddFeed => Message::AddFeed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FeedMenuAction {
+    Delete(nav_bar::Id),
+}
+
+impl menu::Action for FeedMenuAction {
+    type Message = cosmic::Action<Message>;
+    fn message(&self) -> Self::Message {
+        match self {
+            FeedMenuAction::Delete(id) => cosmic::Action::App(Message::DeleteFeed(*id)),
         }
     }
 }
@@ -99,45 +117,35 @@ impl Application for App {
                 syncing: false,
                 force_tx: None,
                 new_feed_url: String::new(),
+                adding_feed: false,
             },
             Task::none(),
         )
     }
 
-    fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Message>>> {
-        if !self.core().nav_bar_active() {
-            return None;
-        }
-
-        let nav_model = self.nav_model()?;
-
-        let mut nav = cosmic::widget::nav_bar(
-            nav_model,
-            |id| cosmic::Action::Cosmic(Action::NavBar(id)),
-        )
-        .on_context(|id| cosmic::Action::Cosmic(Action::NavBarContext(id)))
-        .on_close(|id| cosmic::Action::App(Message::CloseFeed(id)))
-        .context_menu(self.nav_context_menu());
-        #[cfg(wayland_platform)]
-        {
-            nav = nav
-                .window_id_maybe(self.core().main_window_id())
-                .on_surface_action(|action| cosmic::Action::Surface(action.flatten()))
-        }
-        let mut nav = nav
-            .into_container()
-            .width(Length::Shrink)
-            .height(Length::Fill);
-
-        if !self.core().is_condensed() {
-            nav = nav.max_width(280);
-        }
-
-        Some(Element::from(nav))
-    }
-
     fn nav_model(&self) -> Option<&nav_bar::Model> {
         Some(&self.nav)
+    }
+
+    fn nav_context_menu(&self) -> Option<Vec<menu::Tree<cosmic::Action<Message>>>> {
+        Some(menu::nav_context(
+            &HashMap::<menu::KeyBind, FeedMenuAction>::new(),
+            self.nav
+                .iter()
+                .map(|id| match self.nav.data::<String>(id) {
+                    None => Vec::new(), // "All Articles"
+                    Some(_) => vec![menu::Item::Button(
+                        "Delete feed",
+                        None,
+                        FeedMenuAction::Delete(id),
+                    )],
+                })
+                .collect(),
+        ))
+    }
+
+    fn header_start(&self) -> Vec<Element<'_, Message>> {
+        vec![menu_bar()]
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
@@ -236,13 +244,18 @@ impl Application for App {
                 }
             }
 
-            Message::ForceRefreshSent => {}
-
             Message::AddFeedInput(url) => {
                 self.new_feed_url = url;
             }
 
             Message::AddFeed => {
+                self.adding_feed = !self.adding_feed;
+                if !self.adding_feed {
+                    self.new_feed_url.clear();
+                }
+            }
+
+            Message::AddFeedSubmit => {
                 let url = self.new_feed_url.trim().to_string();
                 if url.is_empty() {
                     return Task::none();
@@ -258,10 +271,10 @@ impl Application for App {
                         .icon(cosmic::widget::icon::from_name(
                             "application-rss+xml-symbolic",
                         ))
-                        .data(url.clone())
-                        .closable();
+                        .data(url.clone());
                 }
                 self.new_feed_url.clear();
+                self.adding_feed = false;
                 // Trigger an immediate sync so the new feed's articles appear now.
                 self.syncing = true;
                 if let Some(tx) = self.force_tx.clone() {
@@ -269,7 +282,12 @@ impl Application for App {
                 }
             }
 
-            Message::CloseFeed(id) => {
+            Message::CancelAddFeed => {
+                self.adding_feed = false;
+                self.new_feed_url.clear();
+            }
+
+            Message::DeleteFeed(id) => {
                 let was_active = self.nav.active() == id;
                 let url: Option<String> = self.nav.data::<String>(id).cloned();
                 if let Some(url) = url {
@@ -299,20 +317,23 @@ impl Application for App {
     fn view(&self) -> Element<'_, Message> {
         let mut col = Column::new().spacing(4);
 
-        col = col.push(
-            Row::new()
-                .spacing(8)
-                .push(
-                    text_input(
-                        "https://example.com/feed.xml",
-                        &self.new_feed_url,
+        if self.adding_feed {
+            col = col.push(
+                Row::new()
+                    .spacing(8)
+                    .push(
+                        text_input(
+                            "https://example.com/feed.xml",
+                            &self.new_feed_url,
+                        )
+                        .on_input(Message::AddFeedInput)
+                        .width(Length::Fill),
                     )
-                    .on_input(Message::AddFeedInput)
-                    .width(Length::Fill),
-                )
-                .push(button::text("Add feed").on_press(Message::AddFeed))
-                .height(Length::Shrink),
-        );
+                    .push(button::text("Add feed").on_press(Message::AddFeedSubmit))
+                    .push(button::text("Cancel").on_press(Message::CancelAddFeed))
+                    .height(Length::Shrink),
+            );
+        }
 
         for e in &self.selected_entries {
             col = col.push(
@@ -320,8 +341,13 @@ impl Application for App {
                     Column::new()
                         .push(text(&e.title).size(16))
                         .push(
-                            text(e.published.format("%d %b %Y  %H:%M").to_string())
-                                .size(11),
+                            text(
+                                e.published
+                                    .with_timezone(&Local)
+                                    .format("%d %b %Y  %H:%M")
+                                    .to_string(),
+                            )
+                            .size(11),
                         )
                         .spacing(2),
                 )
@@ -409,6 +435,24 @@ impl App {
         }
         Task::none()
     }
+}
+
+fn menu_bar<'a>() -> Element<'a, Message> {
+    menu::bar(vec![menu::Tree::with_children(
+        cosmic::widget::RcElementWrapper::new(Element::from(menu::root("Feeds"))),
+        menu::items(
+            &HashMap::<menu::KeyBind, MenuAction>::new(),
+            vec![menu::Item::Button(
+                "Add feed…",
+                Some(cosmic::widget::icon::from_name("list-add-symbolic").into()),
+                MenuAction::AddFeed,
+            )],
+        ),
+    )])
+    .item_height(ItemHeight::Dynamic(40))
+    .item_width(ItemWidth::Uniform(240))
+    .spacing(4.0)
+    .into()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
