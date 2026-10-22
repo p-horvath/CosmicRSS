@@ -57,6 +57,16 @@ pub fn add_channel(conn: &Connection, url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Sets a user-chosen title for a feed (rename). `store()` preserves any title
+/// that differs from the URL placeholder, so the rename survives syncs.
+pub fn set_channel_title(conn: &Connection, id: &str, title: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE channel SET title = ?1 WHERE id = ?2",
+        params![title, id],
+    )?;
+    Ok(())
+}
+
 /// Removes a feed and all of its entries.
 pub fn remove_channel(conn: &mut Connection, id: &str) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
@@ -69,8 +79,15 @@ pub fn remove_channel(conn: &mut Connection, id: &str) -> anyhow::Result<()> {
 pub fn store(conn: &mut Connection, channels: &[Channel]) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
     for c in channels {
+        // Upsert: new channels get the feed's title; for existing rows, correct
+        // the title only while it's still the URL placeholder, so user renames
+        // (see `set_channel_title`) survive syncs.
         tx.execute(
-            "INSERT OR REPLACE INTO channel (id, title, url) VALUES (?1, ?2, ?3)",
+            "INSERT INTO channel (id, title, url) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+                 title = CASE WHEN channel.title = channel.url THEN excluded.title
+                              ELSE channel.title END,
+                 url = excluded.url",
             params![c.id, c.title, c.url],
         )?;
         for e in &c.entries {

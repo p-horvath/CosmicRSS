@@ -30,6 +30,8 @@ struct App {
     force_tx: Option<mpsc::Sender<()>>,
     new_feed_url: String,
     adding_feed: bool,
+    renaming_feed: Option<nav_bar::Id>,
+    rename_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,16 @@ enum Message {
     AddFeedSubmit,
     CancelAddFeed,
     DeleteFeed(nav_bar::Id),
+    /// Right-click → "Rename feed": enter rename mode for the nav item.
+    RenameFeed(nav_bar::Id),
+    /// Rename-row text input changes.
+    RenameInput(String),
+    /// "Save" button in the rename row.
+    RenameSubmit,
+    /// "Cancel" button in the rename row.
+    CancelRename,
+    /// Open an article entry's link in the default browser.
+    OpenEntry(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +76,7 @@ impl menu::Action for MenuAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FeedMenuAction {
+    Rename(nav_bar::Id),
     Delete(nav_bar::Id),
 }
 
@@ -71,6 +84,7 @@ impl menu::Action for FeedMenuAction {
     type Message = cosmic::Action<Message>;
     fn message(&self) -> Self::Message {
         match self {
+            FeedMenuAction::Rename(id) => cosmic::Action::App(Message::RenameFeed(*id)),
             FeedMenuAction::Delete(id) => cosmic::Action::App(Message::DeleteFeed(*id)),
         }
     }
@@ -118,6 +132,8 @@ impl Application for App {
                 force_tx: None,
                 new_feed_url: String::new(),
                 adding_feed: false,
+                renaming_feed: None,
+                rename_text: String::new(),
             },
             Task::none(),
         )
@@ -134,11 +150,18 @@ impl Application for App {
                 .iter()
                 .map(|id| match self.nav.data::<String>(id) {
                     None => Vec::new(), // "All Articles"
-                    Some(_) => vec![menu::Item::Button(
-                        "Delete feed",
-                        None,
-                        FeedMenuAction::Delete(id),
-                    )],
+                    Some(_) => vec![
+                        menu::Item::Button(
+                            "Rename feed",
+                            None,
+                            FeedMenuAction::Rename(id),
+                        ),
+                        menu::Item::Button(
+                            "Delete feed",
+                            None,
+                            FeedMenuAction::Delete(id),
+                        ),
+                    ],
                 })
                 .collect(),
         ))
@@ -250,7 +273,11 @@ impl Application for App {
 
             Message::AddFeed => {
                 self.adding_feed = !self.adding_feed;
-                if !self.adding_feed {
+                if self.adding_feed {
+                    // Opening the add row closes the rename row.
+                    self.renaming_feed = None;
+                    self.rename_text.clear();
+                } else {
                     self.new_feed_url.clear();
                 }
             }
@@ -310,6 +337,40 @@ impl Application for App {
                     self.all_loaded = self.selected_entries.len() < PAGE_SIZE;
                 }
             }
+
+            Message::RenameFeed(id) => {
+                // Opening the rename row closes the add row.
+                self.adding_feed = false;
+                self.new_feed_url.clear();
+                self.rename_text = self.nav.text(id).unwrap_or_default().to_string();
+                self.renaming_feed = Some(id);
+            }
+
+            Message::RenameInput(text) => {
+                self.rename_text = text;
+            }
+
+            Message::RenameSubmit => {
+                if let Some(id) = self.renaming_feed.take() {
+                    let title = self.rename_text.trim().to_string();
+                    self.rename_text.clear();
+                    if !title.is_empty() {
+                        if let Some(url) = self.nav.data::<String>(id).cloned() {
+                            let _ = db::set_channel_title(&self.conn, &url, &title);
+                        }
+                        self.nav.text_set(id, title);
+                    }
+                }
+            }
+
+            Message::CancelRename => {
+                self.renaming_feed = None;
+                self.rename_text.clear();
+            }
+
+            Message::OpenEntry(link) => {
+                open_in_browser(link);
+            }
         }
         Task::none()
     }
@@ -335,21 +396,50 @@ impl Application for App {
             );
         }
 
+        if self.renaming_feed.is_some() {
+            col = col.push(
+                Row::new()
+                    .spacing(8)
+                    .push(
+                        text_input("Feed title", &self.rename_text)
+                            .on_input(Message::RenameInput)
+                            .width(Length::Fill),
+                    )
+                    .push(button::text("Save").on_press(Message::RenameSubmit))
+                    .push(button::text("Cancel").on_press(Message::CancelRename))
+                    .height(Length::Shrink),
+            );
+        }
+
         for e in &self.selected_entries {
             col = col.push(
                 container(
-                    Column::new()
-                        .push(text(&e.title).size(16))
+                    Row::new()
+                        .spacing(8)
+                        .align_y(Alignment::Center)
                         .push(
-                            text(
-                                e.published
-                                    .with_timezone(&Local)
-                                    .format("%d %b %Y  %H:%M")
-                                    .to_string(),
-                            )
-                            .size(11),
+                            Column::new()
+                                .push(text(&e.title).size(16))
+                                .push(
+                                    text(
+                                        e.published
+                                            .with_timezone(&Local)
+                                            .format("%d %b %Y  %H:%M")
+                                            .to_string(),
+                                    )
+                                    .size(11),
+                                )
+                                .spacing(2)
+                                .width(Length::Fill),
                         )
-                        .spacing(2),
+                        .push(
+                            button::icon(cosmic::widget::icon::from_name("web-browser-symbolic"))
+                                .class(cosmic::theme::Button::Transparent)
+                                .on_press_maybe(
+                                    (!e.link.is_empty())
+                                        .then(|| Message::OpenEntry(e.link.clone())),
+                                ),
+                        ),
                 )
                 .padding([8, 12])
                 .width(Length::Fill),
@@ -453,6 +543,20 @@ fn menu_bar<'a>() -> Element<'a, Message> {
     .item_width(ItemWidth::Uniform(240))
     .spacing(4.0)
     .into()
+}
+
+/// Open `url` in the system's default browser. Fire-and-forget on a dedicated
+/// thread so the UI thread never blocks; stdio is nulled so the child process
+/// can't hang on inherited handles.
+fn open_in_browser(url: String) {
+    std::thread::spawn(move || {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    });
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
