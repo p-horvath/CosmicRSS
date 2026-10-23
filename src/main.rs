@@ -4,11 +4,9 @@ mod opml;
 mod sync;
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use cosmic::app::{Core, Settings, Task};
 use cosmic::cosmic_theme::palette::WithAlpha;
-use cosmic::iced::core::Rotation;
 use cosmic::iced::{Subscription, Length};
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::Viewport;
@@ -31,7 +29,6 @@ struct App {
     all_loaded: bool,
     conn: rusqlite::Connection,
     syncing: bool,
-    sync_start: Option<Instant>,
     force_tx: Option<mpsc::Sender<()>>,
     new_feed_url: String,
     adding_feed: bool,
@@ -45,9 +42,6 @@ enum Message {
     Scrolled(Viewport),
     LoadMore,
     RefreshNow,
-    /// Advance the header spinner by one frame; rescheduled from
-    /// `update` while a sync is in flight.
-    Frame,
     SyncReady(mpsc::Sender<()>),
     AddFeedInput(String),
     /// "Feeds → Add feed…" pressed: toggles the add-feed input row.
@@ -151,7 +145,6 @@ impl Application for App {
             all_loaded,
             conn,
             syncing: false,
-            sync_start: None,
             force_tx: None,
             new_feed_url: String::new(),
             adding_feed: false,
@@ -196,23 +189,19 @@ impl Application for App {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        // The header shows the refresh icon; while syncing it spins
-        // (one full turn per second) and the button is disabled.
-        let icon = cosmic::widget::icon::from_name("view-refresh-symbolic").icon();
-        let icon = match self.sync_start {
-            Some(start) => {
-                let elapsed = start.elapsed().as_secs_f32();
-                icon.rotation(Rotation::from(std::f32::consts::TAU * (elapsed % 1.0)))
-            }
-            None => icon,
-        };
-        let btn = button::custom(icon);
+        // The header shows the refresh icon; while syncing it is replaced
+        // by the indeterminate circular spinner (self-animating, like
+        // cosmic-store's loading indicator).
         let btn = if self.syncing {
-            btn
+            cosmic::widget::indeterminate_circular().size(16.0).into()
         } else {
-            btn.on_press(Message::RefreshNow)
+            let icon = cosmic::widget::icon::from_name("view-refresh-symbolic").icon();
+            button::custom(icon)
+                .class(cosmic::theme::Button::Icon)
+                .on_press(Message::RefreshNow)
+                .into()
         };
-        vec![menu_bar(), btn.into()]
+        vec![menu_bar(), btn]
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
@@ -239,7 +228,6 @@ impl Application for App {
 
             Message::Tick(channels) => {
                 self.syncing = false;
-                self.sync_start = None;
                 for c in &channels {
                     let _ = db::store(&mut self.conn, std::slice::from_ref(c));
                 }
@@ -288,13 +276,6 @@ impl Application for App {
             Message::LoadMore => return self.load_more(),
 
             Message::RefreshNow => return self.start_sync(),
-
-            Message::Frame => {
-                // Keep the spinner turning while the sync is in flight.
-                if self.syncing {
-                    return frame_task();
-                }
-            }
 
             Message::AddFeedInput(url) => {
                 self.new_feed_url = url;
@@ -725,19 +706,13 @@ enum SyncState {
 
 impl App {
     /// Signal the sync loop to run a cycle now and start the header
-    /// spinner. If a sync is already in flight, just re-signal it;
-    /// the spinner frame chain is already running.
+    /// spinner. If a sync is already in flight, just re-signal it.
     fn start_sync(&mut self) -> Task<Message> {
         if let Some(tx) = self.force_tx.clone() {
             tokio::spawn(async move { let _ = tx.send(()).await; });
         }
-        if self.syncing {
-            Task::none()
-        } else {
-            self.syncing = true;
-            self.sync_start = Some(Instant::now());
-            frame_task()
-        }
+        self.syncing = true;
+        Task::none()
     }
 
     /// Updates the nav labels with unread counts: a feed with unread entries
@@ -794,15 +769,6 @@ impl App {
         }
         Task::none()
     }
-}
-
-/// Emits `Message::Frame` roughly every 16 ms; `update` reschedules it
-/// while a sync is in flight so the header icon keeps spinning.
-fn frame_task() -> Task<Message> {
-    Task::future(async {
-        tokio::time::sleep(Duration::from_millis(16)).await;
-        cosmic::Action::App(Message::Frame)
-    })
 }
 
 fn menu_bar<'a>() -> Element<'a, Message> {
