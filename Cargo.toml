@@ -3,6 +3,10 @@ name = "cosmic-rss"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["wgpu"]
+wgpu = ["libcosmic/wgpu"]
+
 [dependencies]
 libcosmic = { git = "https://github.com/pop-os/libcosmic", features = ["winit", "tokio"] }
 tokio = { version = "1", features = ["full"] }
