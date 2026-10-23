@@ -15,6 +15,7 @@ A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) 
 - Add feeds at runtime: **Feeds → Add feed…** in the header - paste a feed URL, no rebuild needed
 - Delete feeds: right-click a feed in the sidebar → **Delete feed**
 - Rename feeds: right-click → **Rename feed** - the title is preserved across syncs and restarts
+- Import/export subscriptions as OPML (**Feeds → Export OPML… / Import OPML…**) - compatible with other feed readers (Reeder, Feedly, NetNewsWire, …)
 - Displays feeds in a collapsible sidebar - click a feed to filter articles, "All Articles" shows everything
 - Tracks read/unread state: clicking an article row (or opening it in the browser) marks it read, clicking again marks it unread; read articles are dimmed. Read state survives restarts and feed syncs
 - Unread counts: each feed in the sidebar shows its unread number ("All Articles" shows the total), and the footer shows the unread count for the current view
@@ -71,6 +72,7 @@ rm ~/.local/share/com.example.cosmic-rss/rss.db
 src/
 ├── main.rs    # App struct, UI layout, nav sidebar, message handling
 ├── feed.rs    # Entry and Channel data types
+├── opml.rs    # OPML import/export (export_opml / parse_opml)
 ├── sync.rs    # RSS/Atom fetching, background sync loop
 └── db.rs      # SQLite setup, read/write helpers
 ```
@@ -83,6 +85,8 @@ All feed management happens in the UI - no code changes or rebuilds needed.
 - **Rename:** right-click a feed in the sidebar → **Rename feed**, type the new title, press **Save**.
 - **Mark all as read:** right-click a feed → **Mark all as read** (marks all of its articles as read).
 - **Delete:** right-click a feed → **Delete feed** (removes the feed and its articles).
+- **Export OPML:** **Feeds → Export OPML…** - saves all feeds as an OPML subscription list (the format Reeder, Feedly, NetNewsWire, etc. use).
+- **Import OPML:** **Feeds → Import OPML…** - adds feeds from an OPML file. Additive only: existing feeds are kept as-is (deduped by URL), nothing is deleted or renamed; imported feeds are synced immediately.
 
 To reset to the default feed set, delete the database (see above).
 
@@ -96,6 +100,7 @@ To reset to the default feed set, delete the database (see above).
 | `tokio` | For Async runtime |
 | `reqwest` | HTTP client for fetching feeds |
 | `rss` | For parsing RSS feeds |
+| `quick-xml` | XML parsing for OPML import/export |
 | `atom_syndication` | For parsing Atom feeds |
 | `rusqlite` | SQLite database (bundled) |
 | `chrono` | For date/time parsing and formatting |

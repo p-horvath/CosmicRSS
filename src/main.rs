@@ -1,5 +1,6 @@
 mod db;
 mod feed;
+mod opml;
 mod sync;
 
 use std::collections::HashMap;
@@ -46,6 +47,12 @@ enum Message {
     /// "Feeds → Add feed…" pressed: toggles the add-feed input row.
     AddFeed,
     AddFeedSubmit,
+    /// "Feeds → Export OPML…": export all feeds as an OPML file.
+    ExportOpml,
+    /// "Feeds → Import OPML…": open the import dialog.
+    ImportOpml,
+    /// Import dialog result: parsed feeds, or `None` on cancel/error.
+    ImportOpmlFeeds(Option<Vec<opml::FeedRef>>),
     CancelAddFeed,
     DeleteFeed(nav_bar::Id),
     /// Right-click a feed → "Mark all as read": mark all of its entries read.
@@ -67,6 +74,8 @@ enum Message {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MenuAction {
     AddFeed,
+    ExportOpml,
+    ImportOpml,
 }
 
 impl menu::Action for MenuAction {
@@ -74,6 +83,8 @@ impl menu::Action for MenuAction {
     fn message(&self) -> Message {
         match self {
             MenuAction::AddFeed => Message::AddFeed,
+            MenuAction::ExportOpml => Message::ExportOpml,
+            MenuAction::ImportOpml => Message::ImportOpml,
         }
     }
 }
@@ -302,6 +313,113 @@ impl Application for App {
                 if let Some(tx) = self.force_tx.clone() {
                     tokio::spawn(async move { let _ = tx.send(()).await; });
                 }
+            }
+
+            Message::ExportOpml => {
+                // Clone the channels out before the dialog: no `self` inside
+                // the async part.
+                let channels = db::load_channels(&self.conn).unwrap_or_default();
+                tokio::spawn(async move {
+                    let document = opml::export_opml(&channels);
+                    match cosmic::dialog::file_chooser::save::Dialog::new()
+                        .title("Export OPML".to_string())
+                        .file_name("cosmic-rss-feeds.opml".to_string())
+                        .save_file()
+                        .await
+                    {
+                        Ok(response) => match response.url() {
+                            Some(url) => match url.to_file_path() {
+                                Ok(path) => {
+                                    if let Err(err) = std::fs::write(&path, document) {
+                                        eprintln!("export OPML: failed to write {path:?}: {err}");
+                                    }
+                                }
+                                Err(err) => eprintln!("export OPML: invalid path: {err:?}"),
+                            },
+                            None => eprintln!("export OPML: no file selected"),
+                        },
+                        // User closed the dialog: nothing to do.
+                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => {}
+                        Err(err) => eprintln!("export OPML failed: {err:?}"),
+                    }
+                });
+            }
+
+            Message::ImportOpml => {
+                // The dialog, file read, and parse all run off the UI thread;
+                // the parsed feeds come back as `ImportOpmlFeeds`.
+                return Task::future(async {
+                    let refs = match cosmic::dialog::file_chooser::open::Dialog::new()
+                        .title("Import OPML".to_string())
+                        .filter(
+                            cosmic::dialog::file_chooser::FileFilter::new("OPML")
+                                .extension("opml"),
+                        )
+                        .open_file()
+                        .await
+                    {
+                        Ok(response) => match response.url().to_file_path() {
+                            Ok(path) => match std::fs::read_to_string(&path) {
+                                Ok(data) => match opml::parse_opml(&data) {
+                                    Ok(refs) => Some(refs),
+                                    Err(err) => {
+                                        eprintln!("import OPML: {err}");
+                                        None
+                                    }
+                                },
+                                Err(err) => {
+                                    eprintln!("import OPML: failed to read {path:?}: {err}");
+                                    None
+                                }
+                            },
+                            Err(()) => {
+                                eprintln!("import OPML: path from dialog was not a file path");
+                                None
+                            }
+                        },
+                        // User closed the dialog: nothing to do.
+                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => None,
+                        Err(err) => {
+                            eprintln!("import OPML failed: {err:?}");
+                            None
+                        }
+                    };
+                    cosmic::Action::App(Message::ImportOpmlFeeds(refs))
+                });
+            }
+
+            Message::ImportOpmlFeeds(None) => {}
+
+            Message::ImportOpmlFeeds(Some(refs)) => {
+                // Additive only: skip feeds already in the sidebar (dedupe
+                // by URL, the PK scheme); never delete or rename existing ones.
+                let mut added = false;
+                for feed in refs {
+                    if self
+                        .nav
+                        .iter()
+                        .any(|id| self.nav.data::<String>(id) == Some(&feed.url))
+                    {
+                        continue;
+                    }
+                    if db::add_channel(&self.conn, &feed.url).is_ok() {
+                        self.nav.insert()
+                            .text(feed.title)
+                            .icon(cosmic::widget::icon::from_name(
+                                "application-rss+xml-symbolic",
+                            ))
+                            .data(feed.url);
+                        added = true;
+                    }
+                }
+                if added {
+                    // Trigger an immediate sync so the imported feeds fetch now.
+                    self.syncing = true;
+                    if let Some(tx) = self.force_tx.clone() {
+                        tokio::spawn(async move { let _ = tx.send(()).await; });
+                    }
+                }
+                self.refresh_nav_counts();
             }
 
             Message::CancelAddFeed => {
@@ -647,11 +765,23 @@ fn menu_bar<'a>() -> Element<'a, Message> {
         cosmic::widget::RcElementWrapper::new(Element::from(menu::root("Feeds"))),
         menu::items(
             &HashMap::<menu::KeyBind, MenuAction>::new(),
-            vec![menu::Item::Button(
-                "Add feed…",
-                Some(cosmic::widget::icon::from_name("list-add-symbolic").into()),
-                MenuAction::AddFeed,
-            )],
+            vec![
+                menu::Item::Button(
+                    "Add feed…",
+                    Some(cosmic::widget::icon::from_name("list-add-symbolic").into()),
+                    MenuAction::AddFeed,
+                ),
+                menu::Item::Button(
+                    "Export OPML…",
+                    Some(cosmic::widget::icon::from_name("document-save-symbolic").into()),
+                    MenuAction::ExportOpml,
+                ),
+                menu::Item::Button(
+                    "Import OPML…",
+                    Some(cosmic::widget::icon::from_name("document-open-symbolic").into()),
+                    MenuAction::ImportOpml,
+                ),
+            ],
         ),
     )])
     .item_height(ItemHeight::Dynamic(40))
