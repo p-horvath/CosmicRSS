@@ -11,6 +11,7 @@ use cosmic::iced::{Subscription, Length};
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::Viewport;
 use cosmic::widget::{container, scrollable, text, text_input, Column, Row, nav_bar, Space};
+use cosmic::widget::text::{body, caption};
 use cosmic::widget::button;
 use cosmic::widget::menu::{self, ItemHeight, ItemWidth};
 use chrono::Local;
@@ -549,9 +550,10 @@ impl Application for App {
                             &self.new_feed_url,
                         )
                         .on_input(Message::AddFeedInput)
+                        .on_submit(|_| Message::AddFeedSubmit)
                         .width(Length::Fill),
                     )
-                    .push(button::text("Add feed").on_press(Message::AddFeedSubmit))
+                    .push(button::suggested("Add feed").on_press(Message::AddFeedSubmit))
                     .push(button::text("Cancel").on_press(Message::CancelAddFeed))
                     .height(Length::Shrink),
             );
@@ -564,9 +566,10 @@ impl Application for App {
                     .push(
                         text_input("Feed title", &self.rename_text)
                             .on_input(Message::RenameInput)
+                            .on_submit(|_| Message::RenameSubmit)
                             .width(Length::Fill),
                     )
-                    .push(button::text("Save").on_press(Message::RenameSubmit))
+                    .push(button::suggested("Save").on_press(Message::RenameSubmit))
                     .push(button::text("Cancel").on_press(Message::CancelRename))
                     .height(Length::Shrink),
             );
@@ -592,13 +595,12 @@ impl Application for App {
                                             .class(read_class),
                                     )
                                     .push(
-                                        text(
+                                        caption(
                                             e.published
                                                 .with_timezone(&Local)
                                                 .format("%d %b %Y  %H:%M")
                                                 .to_string(),
                                         )
-                                        .size(11)
                                         .class(read_class),
                                     )
                                     .spacing(2)
@@ -640,30 +642,24 @@ impl Application for App {
                     .spacing(space_xs)
                     .push(button::text("Load more").on_press(Message::LoadMore))
                     .push(
-                        text(
-                            format!(
-                                "{} loaded ({} unread)",
-                                self.selected_entries.len(),
-                                unread
-                            ),
-                        )
-                        .size(12),
+                        caption(format!(
+                            "{} loaded ({} unread)",
+                            self.selected_entries.len(),
+                            unread
+                        )),
                     ),
             );
         } else if !self.selected_entries.is_empty() {
             col = col.push(Space::new().height(space_xxs));
             col = col.push(
-                text(
-                    format!(
-                        "All {} articles loaded ({} unread)",
-                        self.selected_entries.len(),
-                        unread
-                    ),
-                )
-                .size(12),
+                caption(format!(
+                    "All {} articles loaded ({} unread)",
+                    self.selected_entries.len(),
+                    unread
+                )),
             );
         } else {
-            col = col.push(text("No articles yet — press Refresh").size(14));
+            col = col.push(body("No articles yet — press Refresh"));
         }
 
         let scroller = scrollable(col.align_x(Alignment::Start))
