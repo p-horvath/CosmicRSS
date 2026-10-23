@@ -178,7 +178,10 @@ impl Application for App {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        vec![menu_bar()]
+        let label = if self.syncing { "Syncing…" } else { "Refresh" };
+        let btn = button::text(label);
+        let btn = if self.syncing { btn } else { btn.on_press(Message::RefreshNow) };
+        vec![menu_bar(), btn.into()]
     }
 
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
@@ -191,13 +194,6 @@ impl Application for App {
         };
         self.all_loaded = self.selected_entries.len() < PAGE_SIZE;
         Task::none()
-    }
-
-    fn header_end(&self) -> Vec<Element<'_, Message>> {
-        let label = if self.syncing { "Syncing…" } else { "Refresh" };
-        let btn = button::text(label);
-        let btn = if self.syncing { btn } else { btn.on_press(Message::RefreshNow) };
-        vec![btn.into()]
     }
 
     fn view_window(&self, _id: cosmic::iced::window::Id) -> Element<'_, Message> {
