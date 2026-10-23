@@ -35,6 +35,8 @@ struct App {
     adding_feed: bool,
     renaming_feed: Option<nav_bar::Id>,
     rename_text: String,
+    /// Error banner text, shown at the top of the view (e.g. OPML failures).
+    error_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,8 +54,12 @@ enum Message {
     ExportOpml,
     /// "Feeds → Import OPML…": open the import dialog.
     ImportOpml,
-    /// Import dialog result: parsed feeds, or `None` on cancel/error.
+    /// Import dialog result: parsed feeds, or `None` on cancel.
     ImportOpmlFeeds(Option<Vec<opml::FeedRef>>),
+    /// Error banner text; shown at the top of the view.
+    Error(String),
+    /// Close button pressed on the error banner.
+    CloseError,
     CancelAddFeed,
     DeleteFeed(nav_bar::Id),
     /// Right-click a feed → "Mark all as read": mark all of its entries read.
@@ -151,6 +157,7 @@ impl Application for App {
             adding_feed: false,
             renaming_feed: None,
             rename_text: String::new(),
+            error_status: None,
         };
         app.refresh_nav_counts();
         (app, Task::none())
@@ -321,29 +328,46 @@ impl Application for App {
                 // Clone the channels out before the dialog: no `self` inside
                 // the async part.
                 let channels = db::load_channels(&self.conn).unwrap_or_default();
-                tokio::spawn(async move {
+                return Task::future(async move {
                     let document = opml::export_opml(&channels);
-                    match cosmic::dialog::file_chooser::save::Dialog::new()
+                    let response = match cosmic::dialog::file_chooser::save::Dialog::new()
                         .title("Export OPML".to_string())
                         .file_name("cosmic-rss-feeds.opml".to_string())
                         .save_file()
                         .await
                     {
-                        Ok(response) => match response.url() {
-                            Some(url) => match url.to_file_path() {
-                                Ok(path) => {
-                                    if let Err(err) = std::fs::write(&path, document) {
-                                        eprintln!("export OPML: failed to write {path:?}: {err}");
-                                    }
-                                }
-                                Err(err) => eprintln!("export OPML: invalid path: {err:?}"),
-                            },
-                            None => eprintln!("export OPML: no file selected"),
-                        },
                         // User closed the dialog: nothing to do.
-                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => {}
-                        Err(err) => eprintln!("export OPML failed: {err:?}"),
+                        Ok(response) => response,
+                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => {
+                            return cosmic::Action::None
+                        }
+                        Err(err) => {
+                            return cosmic::Action::App(Message::Error(format!(
+                                "Export OPML failed: {err:?}"
+                            )))
+                        }
+                    };
+                    let path = match response.url() {
+                        Some(url) => match url.to_file_path() {
+                            Ok(path) => path,
+                            Err(err) => {
+                                return cosmic::Action::App(Message::Error(format!(
+                                    "Export OPML: invalid path: {err:?}"
+                                )))
+                            }
+                        },
+                        None => {
+                            return cosmic::Action::App(Message::Error(
+                                "Export OPML: no file selected".to_string(),
+                            ))
+                        }
+                    };
+                    if let Err(err) = std::fs::write(&path, document) {
+                        return cosmic::Action::App(Message::Error(format!(
+                            "Export OPML: failed to write {path:?}: {err}"
+                        )));
                     }
+                    cosmic::Action::None
                 });
             }
 
@@ -351,7 +375,7 @@ impl Application for App {
                 // The dialog, file read, and parse all run off the UI thread;
                 // the parsed feeds come back as `ImportOpmlFeeds`.
                 return Task::future(async {
-                    let refs = match cosmic::dialog::file_chooser::open::Dialog::new()
+                    let response = match cosmic::dialog::file_chooser::open::Dialog::new()
                         .title("Import OPML".to_string())
                         .filter(
                             cosmic::dialog::file_chooser::FileFilter::new("OPML")
@@ -360,37 +384,54 @@ impl Application for App {
                         .open_file()
                         .await
                     {
-                        Ok(response) => match response.url().to_file_path() {
-                            Ok(path) => match std::fs::read_to_string(&path) {
-                                Ok(data) => match opml::parse_opml(&data) {
-                                    Ok(refs) => Some(refs),
-                                    Err(err) => {
-                                        eprintln!("import OPML: {err}");
-                                        None
-                                    }
-                                },
-                                Err(err) => {
-                                    eprintln!("import OPML: failed to read {path:?}: {err}");
-                                    None
-                                }
-                            },
-                            Err(()) => {
-                                eprintln!("import OPML: path from dialog was not a file path");
-                                None
-                            }
-                        },
                         // User closed the dialog: nothing to do.
-                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => None,
+                        Ok(response) => response,
+                        Err(cosmic::dialog::file_chooser::Error::Cancelled) => {
+                            return cosmic::Action::App(Message::ImportOpmlFeeds(None))
+                        }
                         Err(err) => {
-                            eprintln!("import OPML failed: {err:?}");
-                            None
+                            return cosmic::Action::App(Message::Error(format!(
+                                "Import OPML failed: {err:?}"
+                            )))
                         }
                     };
-                    cosmic::Action::App(Message::ImportOpmlFeeds(refs))
+                    let path = match response.url().to_file_path() {
+                        Ok(path) => path,
+                        Err(()) => {
+                            return cosmic::Action::App(Message::Error(
+                                "Import OPML: path from dialog was not a file path".to_string(),
+                            ))
+                        }
+                    };
+                    let data = match std::fs::read_to_string(&path) {
+                        Ok(data) => data,
+                        Err(err) => {
+                            return cosmic::Action::App(Message::Error(format!(
+                                "Import OPML: failed to read {path:?}: {err}"
+                            )))
+                        }
+                    };
+                    let refs = match opml::parse_opml(&data) {
+                        Ok(refs) => refs,
+                        Err(err) => {
+                            return cosmic::Action::App(Message::Error(format!(
+                                "Import OPML: {err}"
+                            )))
+                        }
+                    };
+                    cosmic::Action::App(Message::ImportOpmlFeeds(Some(refs)))
                 });
             }
 
             Message::ImportOpmlFeeds(None) => {}
+
+            Message::Error(error) => {
+                self.error_status = Some(error);
+            }
+
+            Message::CloseError => {
+                self.error_status = None;
+            }
 
             Message::ImportOpmlFeeds(Some(refs)) => {
                 // Additive only: skip feeds already in the sidebar (dedupe
@@ -667,7 +708,25 @@ impl Application for App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        container(scroller)
+        // The error banner sits above the scroll area (not inside it), so it
+        // stays visible even when the list is scrolled.
+        let mut view = Column::new()
+            .spacing(space_xxxs)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        if let Some(error) = &self.error_status {
+            view = view
+                .push(
+                    cosmic::widget::warning(error.as_str())
+                        .on_close(Message::CloseError),
+                )
+                .push(Space::new().height(space_xs));
+        }
+
+        view = view.push(scroller);
+
+        container(view)
             .padding(space_s)
             .width(Length::Fill)
             .height(Length::Fill)

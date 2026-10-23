@@ -139,7 +139,7 @@ pub fn store(conn: &mut Connection, channels: &[Channel]) -> anyhow::Result<()> 
 
 pub fn load_channels(conn: &Connection) -> anyhow::Result<Vec<Channel>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, url FROM channel ORDER BY title ASC",
+        "SELECT id, title, url FROM channel ORDER BY title COLLATE NOCASE ASC",
     )?;
     let result = stmt
         .query_map([], |r| {
