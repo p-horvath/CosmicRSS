@@ -531,12 +531,18 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let mut col = Column::new().spacing(4);
+        // Theme spacing: adapts to the active COSMIC density; the standard
+        // values match the previously hardcoded 4/8/12/16 pixels.
+        let cosmic::cosmic_theme::Spacing {
+            space_xxxs, space_xxs, space_xs, space_s, ..
+        } = cosmic::theme::spacing();
+
+        let mut col = Column::new().spacing(space_xxxs);
 
         if self.adding_feed {
             col = col.push(
                 Row::new()
-                    .spacing(8)
+                    .spacing(space_xxs)
                     .push(
                         text_input(
                             "https://example.com/feed.xml",
@@ -554,7 +560,7 @@ impl Application for App {
         if self.renaming_feed.is_some() {
             col = col.push(
                 Row::new()
-                    .spacing(8)
+                    .spacing(space_xxs)
                     .push(
                         text_input("Feed title", &self.rename_text)
                             .on_input(Message::RenameInput)
@@ -576,7 +582,7 @@ impl Application for App {
                 button::custom(
                     container(
                         Row::new()
-                            .spacing(8)
+                            .spacing(space_xxs)
                             .align_y(Alignment::Center)
                             .push(
                                 Column::new()
@@ -611,7 +617,7 @@ impl Application for App {
                                 ),
                             ),
                     )
-                    .padding([8, 12])
+                    .padding([space_xxs, space_xs])
                     .width(Length::Fill),
                 )
                 // Fill width is required: a Shrink-width button enables width
@@ -628,10 +634,10 @@ impl Application for App {
         let unread = db::count_unread(&self.conn, channel_id.as_deref()).unwrap_or(0);
 
         if !self.all_loaded {
-            col = col.push(Space::new().height(8));
+            col = col.push(Space::new().height(space_xxs));
             col = col.push(
                 Row::new()
-                    .spacing(12)
+                    .spacing(space_xs)
                     .push(button::text("Load more").on_press(Message::LoadMore))
                     .push(
                         text(
@@ -645,7 +651,7 @@ impl Application for App {
                     ),
             );
         } else if !self.selected_entries.is_empty() {
-            col = col.push(Space::new().height(8));
+            col = col.push(Space::new().height(space_xxs));
             col = col.push(
                 text(
                     format!(
@@ -666,7 +672,7 @@ impl Application for App {
             .height(Length::Fill);
 
         container(scroller)
-            .padding(16)
+            .padding(space_s)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
