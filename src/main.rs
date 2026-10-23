@@ -5,6 +5,7 @@ mod sync;
 use std::collections::HashMap;
 
 use cosmic::app::{Core, Settings, Task};
+use cosmic::cosmic_theme::palette::WithAlpha;
 use cosmic::iced::{Subscription, Length};
 use cosmic::iced::Alignment;
 use cosmic::iced::widget::scrollable::Viewport;
@@ -502,7 +503,7 @@ impl Application for App {
                 // compression, which makes Length::Fill children resolve to
                 // content width instead of stretching (misaligning the icon).
                 .width(Length::Fill)
-                .class(cosmic::theme::Button::Transparent)
+                .class(entry_row_class())
                 .on_press(Message::ToggleEntryRead(e.id.clone())),
             );
         }
@@ -686,6 +687,37 @@ fn muted_text_style(theme: &cosmic::theme::Theme) -> cosmic::iced::widget::text:
 const NORMAL_TEXT: cosmic::theme::Text = cosmic::theme::Text::Custom(normal_text_style);
 
 const MUTED_TEXT: cosmic::theme::Text = cosmic::theme::Text::Custom(muted_text_style);
+
+/// Article-row button class: transparent at rest, washed with the same
+/// `neutral_5` the nav sidebar uses on hover/press (alphas copied from
+/// `segmented_button`'s vertical tab-bar).
+fn entry_row_class() -> cosmic::theme::Button {
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_, theme| entry_row_style(theme, None)),
+        hovered: Box::new(|_, theme| entry_row_style(theme, Some(0.3))),
+        pressed: Box::new(|_, theme| entry_row_style(theme, Some(0.25))),
+        disabled: Box::new(|theme| entry_row_style(theme, None)),
+    }
+}
+
+fn entry_row_style(
+    theme: &cosmic::Theme,
+    hover_alpha: Option<f32>,
+) -> cosmic::widget::button::Style {
+    let mut style = cosmic::widget::button::Style::new();
+    // Explicit color: inherited text falls back to whatever the renderer
+    // default is; the row's text uses explicit classes anyway, but this
+    // keeps any inherited content visible (see the Button::Transparent
+    // text bug in docs/read-unread-plan.md).
+    style.text_color = Some(theme.cosmic().on_bg_color().into());
+    style.border_radius = theme.cosmic().corner_radii.radius_m.into();
+    if let Some(alpha) = hover_alpha {
+        let color: cosmic::iced::Color =
+            theme.cosmic().palette.neutral_5.with_alpha(alpha).into();
+        style.background = Some(cosmic::iced::Background::Color(color));
+    }
+    style
+}
 
 /// Open `url` in the system's default browser. Fire-and-forget on a dedicated
 /// thread so the UI thread never blocks; stdio is nulled so the child process
