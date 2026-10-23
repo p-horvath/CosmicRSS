@@ -88,7 +88,7 @@ pub async fn sync_loop(
     // WAL mode allows this to coexist with the main app's connection.
     let conn = db::init();
 
-    let mut interval = time::interval(Duration::from_secs(600));
+    let mut interval = time::interval(Duration::from_secs(900));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     loop {

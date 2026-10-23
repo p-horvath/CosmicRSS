@@ -19,7 +19,7 @@ A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) 
 - Tracks read/unread state: clicking an article row (or opening it in the browser) marks it read, clicking again marks it unread; read articles are dimmed. Read state survives restarts and feed syncs
 - Unread counts: each feed in the sidebar shows its unread number ("All Articles" shows the total), and the footer shows the unread count for the current view
 - Lazy-loads articles as you scroll, 50 at a time
-- Auto-syncs every 10 minutes in the background
+- Auto-syncs every 15 minutes in the background
 - "Refresh" button in the header to trigger an immediate sync
 
 ## What it doesn't do (yet)
@@ -81,6 +81,7 @@ All feed management happens in the UI - no code changes or rebuilds needed.
 
 - **Add:** **Feeds → Add feed…** in the header, paste the feed's URL (RSS or Atom), press **Add feed**.
 - **Rename:** right-click a feed in the sidebar → **Rename feed**, type the new title, press **Save**.
+- **Mark all as read:** right-click a feed → **Mark all as read** (marks all of its articles as read).
 - **Delete:** right-click a feed → **Delete feed** (removes the feed and its articles).
 
 To reset to the default feed set, delete the database (see above).

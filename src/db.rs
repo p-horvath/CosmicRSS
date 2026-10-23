@@ -211,6 +211,15 @@ pub fn set_entry_read(conn: &Connection, id: &str, read: bool) -> anyhow::Result
     Ok(())
 }
 
+/// Marks all of a channel's entries as read.
+pub fn mark_channel_read(conn: &Connection, channel_id: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE entry SET read = 1 WHERE channel = ?1",
+        params![channel_id],
+    )?;
+    Ok(())
+}
+
 /// Counts unread entries, optionally restricted to one channel.
 pub fn count_unread(conn: &Connection, channel_id: Option<&str>) -> anyhow::Result<usize> {
     let n: i64 = match channel_id {

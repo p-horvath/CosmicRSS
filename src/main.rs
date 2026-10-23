@@ -41,13 +41,14 @@ enum Message {
     LoadMore,
     RefreshNow,
     SyncReady(mpsc::Sender<()>),
-    ToggleSidebar,
     AddFeedInput(String),
     /// "Feeds → Add feed…" pressed: toggles the add-feed input row.
     AddFeed,
     AddFeedSubmit,
     CancelAddFeed,
     DeleteFeed(nav_bar::Id),
+    /// Right-click a feed → "Mark all as read": mark all of its entries read.
+    MarkAllRead(nav_bar::Id),
     /// Right-click → "Rename feed": enter rename mode for the nav item.
     RenameFeed(nav_bar::Id),
     /// Rename-row text input changes.
@@ -78,6 +79,7 @@ impl menu::Action for MenuAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FeedMenuAction {
+    MarkAllRead(nav_bar::Id),
     Rename(nav_bar::Id),
     Delete(nav_bar::Id),
 }
@@ -86,6 +88,7 @@ impl menu::Action for FeedMenuAction {
     type Message = cosmic::Action<Message>;
     fn message(&self) -> Self::Message {
         match self {
+            FeedMenuAction::MarkAllRead(id) => cosmic::Action::App(Message::MarkAllRead(*id)),
             FeedMenuAction::Rename(id) => cosmic::Action::App(Message::RenameFeed(*id)),
             FeedMenuAction::Delete(id) => cosmic::Action::App(Message::DeleteFeed(*id)),
         }
@@ -153,6 +156,11 @@ impl Application for App {
                     None => Vec::new(), // "All Articles"
                     Some(_) => vec![
                         menu::Item::Button(
+                            "Mark all as read",
+                            None,
+                            FeedMenuAction::MarkAllRead(id),
+                        ),
+                        menu::Item::Button(
                             "Rename feed",
                             None,
                             FeedMenuAction::Rename(id),
@@ -199,10 +207,6 @@ impl Application for App {
         match message {
             Message::SyncReady(tx) => {
                 self.force_tx = Some(tx);
-            }
-
-            Message::ToggleSidebar => {
-                self.core.nav_bar_toggle();
             }
 
             Message::Tick(channels) => {
@@ -329,6 +333,20 @@ impl Application for App {
                     self.selected_entries =
                         db::load_page(&self.conn, 0, PAGE_SIZE).unwrap_or_default();
                     self.all_loaded = self.selected_entries.len() < PAGE_SIZE;
+                }
+                self.refresh_nav_counts();
+            }
+
+            Message::MarkAllRead(id) => {
+                if let Some(cid) = self.nav.data::<String>(id).cloned() {
+                    let _ = db::mark_channel_read(&self.conn, &cid);
+                    // If this feed is the active view, dim the loaded rows now
+                    // instead of waiting for a reload.
+                    if self.nav.data::<String>(self.nav.active()) == Some(&cid) {
+                        for e in &mut self.selected_entries {
+                            e.read = true;
+                        }
+                    }
                 }
                 self.refresh_nav_counts();
             }
@@ -572,8 +590,11 @@ enum SyncState {
 
 impl App {
     /// Updates the nav labels with unread counts: a feed with unread entries
-    /// shows `"{title} {count}"`, a feed with none shows just its title, and
-    /// "All Articles" (the nav item with no data) shows the total. `text_set`
+    /// shows `"{title} - {count}"` (the count is right-aligned in the label, so
+    /// it's separated from the title — nav items only take a plain text label
+    /// and always render it left-aligned), a feed with none shows just its
+    /// title, and "All Articles" (the nav item with no data) shows the total.
+    /// `text_set`
     /// is only called when the label actually changed. Titles come from
     /// `self.channels`, so title corrections/renames propagate through here.
     fn refresh_nav_counts(&mut self) {
@@ -585,13 +606,13 @@ impl App {
                     if total == 0 {
                         "All Articles".to_string()
                     } else {
-                        format!("All Articles {total}")
+                        format!("All Articles - {total}")
                     }
                 }
                 Some(cid) => {
                     let count = db::count_unread(&self.conn, Some(cid.as_str())).unwrap_or(0);
                     match self.channels.iter().find(|ch| ch.id == *cid) {
-                        Some(ch) if count > 0 => format!("{} {}", ch.title, count),
+                        Some(ch) if count > 0 => format!("{} - {}", ch.title, count),
                         Some(ch) => ch.title.clone(),
                         // Feed not in `self.channels` yet (e.g. just added via the
                         // Feeds menu): keep its current label until the next Tick.
