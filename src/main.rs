@@ -651,7 +651,7 @@ impl Application for App {
                                 button::icon(cosmic::widget::icon::from_name(
                                     "web-browser-symbolic",
                                 ))
-                                .class(cosmic::theme::Button::Transparent)
+                                .class(cosmic::theme::Button::Icon)
                                 .on_press_maybe(
                                     (!e.link.is_empty()).then(|| Message::OpenEntry {
                                         id: e.id.clone(),
