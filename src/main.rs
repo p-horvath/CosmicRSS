@@ -451,9 +451,17 @@ impl Application for App {
                     {
                         continue;
                     }
-                    if db::add_channel(&self.conn, &feed.url).is_ok() {
+                    // Persist the OPML title: `store()` keeps any title that
+                    // differs from the URL placeholder, so imported renames
+                    // survive the first sync just like manual renames.
+                    let title = if feed.title.trim().is_empty() {
+                        feed.url.clone()
+                    } else {
+                        feed.title
+                    };
+                    if db::add_channel_titled(&self.conn, &feed.url, &title).is_ok() {
                         self.nav.insert()
-                            .text(feed.title)
+                            .text(title)
                             .icon(cosmic::widget::icon::from_name(
                                 "application-rss+xml-symbolic",
                             ))

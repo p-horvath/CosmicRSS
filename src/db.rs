@@ -69,9 +69,16 @@ pub fn init() -> Connection {
 /// Adds a feed. `id` is the URL (matching the PK scheme); `title` starts as the
 /// URL and is corrected on the first successful fetch by `store()`.
 pub fn add_channel(conn: &Connection, url: &str) -> anyhow::Result<()> {
+    add_channel_titled(conn, url, url)
+}
+
+/// Adds a feed with an initial title (e.g. a rename carried over by an OPML
+/// import). `store()` preserves any title that differs from the URL placeholder,
+/// so the imported title survives syncs just like a manual rename.
+pub fn add_channel_titled(conn: &Connection, url: &str, title: &str) -> anyhow::Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO channel (id, title, url) VALUES (?1, ?2, ?3)",
-        params![url, url, url],
+        params![url, title, url],
     )?;
     Ok(())
 }
