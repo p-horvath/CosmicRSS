@@ -27,6 +27,7 @@ fn parse_feed(url: &str, xml: &[u8]) -> Result<Channel> {
                 .filter_map(|i| {
                     Some(Entry {
                         id: i.guid()?.value().to_string(),
+                        channel: url.to_string(),
                         title: i.title()?.to_string(),
                         link: i.link()?.to_string(),
                         summary: i.description().map(|s| s.to_string()),
@@ -50,6 +51,7 @@ fn parse_feed(url: &str, xml: &[u8]) -> Result<Channel> {
                     .iter()
                     .map(|e: &AtomEntry| Entry {
                         id: e.id.clone(),
+                        channel: url.to_string(),
                         title: e.title.as_str().to_string(),
                         link: e.links
                             .iter()

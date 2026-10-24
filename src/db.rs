@@ -151,25 +151,26 @@ pub fn load_channels(conn: &Connection) -> anyhow::Result<Vec<Channel>> {
 }
 
 fn parse_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
-    let published_str: String = r.get(4)?;
+    let published_str: String = r.get(5)?;
     let published = DateTime::parse_from_rfc3339(&published_str)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-            4, rusqlite::types::Type::Text, Box::new(e),
+            5, rusqlite::types::Type::Text, Box::new(e),
         ))?;
     Ok(Entry {
         id: r.get(0)?,
-        title: r.get(1)?,
-        link: r.get(2)?,
-        summary: r.get(3)?,
+        channel: r.get(1)?,
+        title: r.get(2)?,
+        link: r.get(3)?,
+        summary: r.get(4)?,
         published,
-        read: r.get(5)?,
+        read: r.get(6)?,
     })
 }
 
 pub fn load_page(conn: &Connection, offset: usize, limit: usize) -> anyhow::Result<Vec<Entry>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, link, summary, published, read FROM entry
+        "SELECT id, channel, title, link, summary, published, read FROM entry
          ORDER BY published DESC LIMIT ?1 OFFSET ?2",
     )?;
     let result = stmt
@@ -186,7 +187,7 @@ pub fn load_page_for_channel(
     limit: usize,
 ) -> anyhow::Result<Vec<Entry>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, title, link, summary, published, read FROM entry
+        "SELECT id, channel, title, link, summary, published, read FROM entry
          WHERE channel = ?1
          ORDER BY published DESC LIMIT ?2 OFFSET ?3",
     )?;
@@ -253,6 +254,7 @@ mod tests {
     fn entry(id: &str, read: bool) -> Entry {
         Entry {
             id: id.to_string(),
+            channel: String::new(),
             title: format!("Title {id}"),
             link: format!("https://example.com/{id}"),
             summary: None,
@@ -296,6 +298,11 @@ mod tests {
         let page = load_page(&conn, 0, 10).unwrap();
         assert!(page.iter().find(|e| e.id == "a").unwrap().read);
         assert!(!page.iter().find(|e| e.id == "b").unwrap().read);
+        // Entries carry their channel id so the UI can show the source feed.
+        assert_eq!(
+            page.iter().find(|e| e.id == "a").unwrap().channel,
+            FEED_URL,
+        );
         assert_eq!(count_unread(&conn, Some(FEED_URL)).unwrap(), 1);
 
         // Simulate the next sync round: the fetch re-delivers everything as

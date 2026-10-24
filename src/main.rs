@@ -585,6 +585,11 @@ impl Application for App {
             space_xxxs, space_xxs, space_xs, space_s, ..
         } = cosmic::theme::spacing();
 
+        // The active selection: `None` = the "All Articles" page, `Some` =
+        // a feed id (also used for the unread count below).
+        let active = self.nav.active();
+        let channel_id: Option<String> = self.nav.data(active).cloned();
+
         let mut col = Column::new().spacing(space_xxxs);
 
         if self.adding_feed {
@@ -628,6 +633,21 @@ impl Application for App {
             } else {
                 NORMAL_TEXT
             };
+            let date = e.published
+                .with_timezone(&Local)
+                .format("%d %b %Y  %H:%M")
+                .to_string();
+            // On the "All Articles" page, append the source feed's title so
+            // each article's origin is visible.
+            let meta = match &channel_id {
+                None => self
+                    .channels
+                    .iter()
+                    .find(|c| c.id == e.channel)
+                    .map(|ch| format!("{date} - {}", ch.title))
+                    .unwrap_or(date),
+                Some(_) => date,
+            };
             col = col.push(
                 button::custom(
                     container(
@@ -642,13 +662,13 @@ impl Application for App {
                                             .class(read_class),
                                     )
                                     .push(
-                                        caption(
-                                            e.published
-                                                .with_timezone(&Local)
-                                                .format("%d %b %Y  %H:%M")
-                                                .to_string(),
-                                        )
-                                        .class(read_class),
+                                        caption(meta)
+                                            .class(read_class)
+                                            .ellipsize(
+                                                cosmic::iced::core::text::Ellipsize::End(
+                                                    cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+                                                ),
+                                            ),
                                     )
                                     .spacing(2)
                                     .width(Length::Fill),
@@ -678,8 +698,6 @@ impl Application for App {
             );
         }
 
-        let active = self.nav.active();
-        let channel_id: Option<String> = self.nav.data(active).cloned();
         let unread = db::count_unread(&self.conn, channel_id.as_deref()).unwrap_or(0);
 
         if !self.all_loaded {
@@ -706,7 +724,7 @@ impl Application for App {
                 )),
             );
         } else {
-            col = col.push(body("No articles yet — press Refresh"));
+            col = col.push(body("No articles yet"));
         }
 
         let scroller = scrollable(col.align_x(Alignment::Start))
