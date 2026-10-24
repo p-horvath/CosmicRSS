@@ -78,8 +78,15 @@ async fn fetch_all(urls: &[String]) -> Vec<Channel> {
 }
 
 
+/// Events the sync loop reports to the UI: a cycle starting, and a cycle's
+/// fetched channels (possibly empty if no feed was fetched).
+pub enum SyncEvent {
+    Start,
+    Finished(Vec<Channel>),
+}
+
 pub async fn sync_loop(
-    tx: mpsc::Sender<Vec<Channel>>,
+    tx: mpsc::Sender<SyncEvent>,
     mut force_rx: mpsc::Receiver<()>,
 ) {
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -99,15 +106,17 @@ pub async fn sync_loop(
             },
         }
 
+        // Always report start and finish (even with no channels fetched), so
+        // the header spinner tracks each cycle and never gets stuck on.
+        let _ = tx.send(SyncEvent::Start).await;
+
         let feeds: Vec<String> = db::load_channels(&conn)
             .unwrap_or_default()
             .into_iter()
             .map(|c| c.url)
             .collect();
         let channels = fetch_all(&feeds).await;
-        if !channels.is_empty() {
-            let _ = tx.send(channels).await;
-        }
+        let _ = tx.send(SyncEvent::Finished(channels)).await;
     }
 }
 

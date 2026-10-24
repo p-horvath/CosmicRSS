@@ -41,6 +41,8 @@ struct App {
 
 #[derive(Debug, Clone)]
 enum Message {
+    /// A sync cycle started (auto or forced): show the header spinner.
+    SyncStart,
     Tick(Vec<feed::Channel>),
     Scrolled(Viewport),
     LoadMore,
@@ -232,6 +234,10 @@ impl Application for App {
         match message {
             Message::SyncReady(tx) => {
                 self.force_tx = Some(tx);
+            }
+
+            Message::SyncStart => {
+                self.syncing = true;
             }
 
             Message::Tick(channels) => {
@@ -746,9 +752,12 @@ impl Application for App {
                         ))
                     }
                     SyncState::Running { mut chan_rx, force_tx } => {
-                        let channels = chan_rx.recv().await?;
+                        let message = match chan_rx.recv().await? {
+                            sync::SyncEvent::Start => Message::SyncStart,
+                            sync::SyncEvent::Finished(channels) => Message::Tick(channels),
+                        };
                         Some((
-                            Message::Tick(channels),
+                            message,
                             SyncState::Running { chan_rx, force_tx },
                         ))
                     }
@@ -760,7 +769,7 @@ impl Application for App {
 enum SyncState {
     Init,
     Running {
-        chan_rx: mpsc::Receiver<Vec<feed::Channel>>,
+        chan_rx: mpsc::Receiver<sync::SyncEvent>,
         force_tx: mpsc::Sender<()>,
     },
 }
