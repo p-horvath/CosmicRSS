@@ -3,12 +3,18 @@ name = "cosmic-rss"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["wgpu"]
+wgpu = ["libcosmic/wgpu"]
+
 [dependencies]
-libcosmic = { git = "https://github.com/pop-os/libcosmic", features = ["winit", "tokio"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", features = ["winit", "tokio", "rfd"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["default"] }
+reqwest = { version = "0.13", features = ["default"] }
 rss = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+quick-xml = "0.41"
+atom_syndication = "0.12"
+rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"

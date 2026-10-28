@@ -1,28 +1,39 @@
 # cosmic-rss
 
-> ⚠️ **DISCLAIMER: This project is a learning exercise and is under development. It is not production-ready and may have bugs, missing features, or break between updates.**
-
 A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) and Rust, designed for the COSMIC desktop environment on Linux.
 
-![Status](https://img.shields.io/badge/status-under%20development-orange)
-![Platform](https://img.shields.io/badge/platform-Linux-blue)
+> **About this fork:** this repository is a fork of [Arunhegde1231/CosmicRSS](https://github.com/Arunhegde1231/CosmicRSS). All modifications in this fork were made by AI based on my requests. I also wanted to experiment with LLMs, so rather than relying on frontier AI models, I'm running smaller models locally on my own machine.
+>
+> This is a personal project, built primarily for my own use. I'm sharing it in case someone else finds it useful, but please keep in mind that I'm not a programmer, and the code may contain bugs, poor implementations, or other issues. I can't guarantee its quality, stability, or reliability.
+>
+> My goal was simple: get an RSS reader that works for me on COSMIC. Nothing more, nothing less.
 
 ---
 
+## Screenshots
+
+| Light | Dark |
+| --- | --- |
+| ![screenshot](resources/screenshots/cosmic-rss-light.png) | ![screenshot](resources/screenshots/cosmic-rss-dark.png) |
+
 ## What it does
 
-- Fetches articles from a hardcoded list of RSS feeds (news, tech, science, open source)
-- Stores them locally in a SQLite database so they persist between launches
-- Displays feeds in a collapsible sidebar — click a feed to filter articles
+- Fetches articles from RSS and Atom feeds
+- Stores them locally in a SQLite database (`~/.local/share/com.example.cosmic-rss/rss.db`) so they persist between launches (To reset to the default feed set, delete the database)
+- Add feeds at runtime: **Feeds → Add feed…** in the header - paste a feed URL, no rebuild needed
+- Delete feeds: right-click a feed in the sidebar → **Delete feed**
+- Rename feeds: right-click → **Rename feed** - the title is preserved across syncs and restarts
+- Import/export subscriptions as OPML (**Feeds → Export OPML… / Import OPML…**) - compatible with other feed readers (Reeder, Feedly, NetNewsWire, …)
+- Displays feeds in a collapsible sidebar - click a feed to filter articles, "All Articles" shows everything
+- Tracks read/unread state: clicking an article row (or opening it in the browser) marks it read, clicking again marks it unread; read articles are dimmed. Read state survives restarts and feed syncs
+- Unread counts: each feed in the sidebar shows its unread number ("All Articles" shows the total), and the footer shows the unread count for the current view
 - Lazy-loads articles as you scroll, 50 at a time
-- Auto-syncs every 10 minutes in the background
+- Auto-syncs every 15 minutes in the background
 - "Refresh" button in the header to trigger an immediate sync
 
 ## What it doesn't do (yet)
 
-- Feeds are hardcoded — no way to add or remove feeds from the UI (you have to edit `sync.rs` directly)
-- No article reading view — titles only, no content or summary pane
-- No read/unread tracking
+- No article reading view - titles only, no content or summary pane
 - No search
 - No notifications
 - RSS has no historical pagination, so older articles only accumulate over time as you leave the app running
@@ -31,64 +42,35 @@ A simple RSS reader built with [libcosmic](https://github.com/pop-os/libcosmic) 
 
 ## Requirements
 
-- Fedora Linux (tested on Fedora 40+)
-- Rust stable toolchain via [rustup](https://rustup.rs)
+- Podman or Docker - for running the dev container
+- App tested on Fedora 45 + Cosmic
 
 ## Building
 
-### 1. Install system dependencies
+This project ships a [dev container](.devcontainer/devcontainer.json) (Fedora 45) with all system dependencies and the Rust toolchain preinstalled, so there is nothing to set up on the host.
+
+### 1. Open the project
+
+Clone the repository, then open it in an IDE. For example Zed detects the dev container automatically and creates it for you - no extensions or manual setup needed.
+
+### 2. Build inside the dev container
 
 ```bash
-sudo dnf install -y \
-    cargo \
-    cmake \
-    just \
-    expat-devel \
-    fontconfig-devel \
-    freetype-devel \
-    libxkbcommon-devel \
-    mesa-libGL-devel \
-    mesa-libEGL-devel \
-    wayland-devel \
-    pkgconf-pkg-config \
-    gcc \
-    g++
-```
-
-### 2. Install Rust (if not already installed)
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-```
-
-### 3. Clone and build
-
-```bash
-git clone <your-repo-url>
-cd CosmicRSS
-
 # Check for errors without building
 cargo check
 
-# Debug build (unoptimised, good for development)
-cargo run
-
 # Release build (optimised, recommended for actual use)
 cargo build --release
-./target/release/cosmic-rss
 ```
 
-On first run, `rss.db` will be created in the current directory. Delete it to start fresh:
+### 3. Run the binary from your host
+
+The built binary is at `target/release/cosmic-rss`.
+
+On first run, `rss.db` will be created in `~/.local/share/com.example.cosmic-rss/`. Delete it to start fresh:
 
 ```bash
-rm rss.db && ./target/release/cosmic-rss
-```
-
-Or do everything at once with this command:
-
-```bash
-cargo build --release && rm rss.db && ./target/release/cosmic-rss
+rm ~/.local/share/com.example.cosmic-rss/rss.db
 ```
 
 ---
@@ -99,22 +81,10 @@ cargo build --release && rm rss.db && ./target/release/cosmic-rss
 src/
 ├── main.rs    # App struct, UI layout, nav sidebar, message handling
 ├── feed.rs    # Entry and Channel data types
-├── sync.rs    # RSS fetching, background sync loop
+├── opml.rs    # OPML import/export (export_opml / parse_opml)
+├── sync.rs    # RSS/Atom fetching, background sync loop
 └── db.rs      # SQLite setup, read/write helpers
 ```
-
-## Adding feeds
-
-Open `src/sync.rs` and add URLs to the `URLS` array at the top of the file:
-
-```rust
-const URLS: &[&str] = &[
-    "https://example.com/feed.rss",
-    // ...
-];
-```
-
-Then rebuild. The new feeds will be fetched on the next sync.
 
 ---
 
@@ -125,15 +95,11 @@ Then rebuild. The new feeds will be fetched on the next sync.
 | `libcosmic` | Core UI framework (COSMIC desktop) |
 | `tokio` | For Async runtime |
 | `reqwest` | HTTP client for fetching feeds |
-| `rss` | For parsing RSS feed |
+| `rss` | For parsing RSS feeds |
+| `quick-xml` | XML parsing for OPML import/export |
+| `atom_syndication` | For parsing Atom feeds |
 | `rusqlite` | SQLite database (bundled) |
 | `chrono` | For date/time parsing and formatting |
 | `serde` | Serialisation |
 | `anyhow` | Error handling |
 | `futures` | Streaming utilities |
-
----
-
-## Contributing
-
-This is primarily a personal learning project for exploring libcosmic and Rust GUI development. Issues and PRs are welcome but response time may be slow.
